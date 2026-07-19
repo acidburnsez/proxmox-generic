@@ -1,0 +1,15 @@
+version: 2
+updates:
+  # Enable Dependabot checks for Terraform providers and modules
+  - package-ecosystem: "terraform"
+    directory: "/terraform"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+
+  # Enable Dependabot checks for GitHub Actions workflows
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5

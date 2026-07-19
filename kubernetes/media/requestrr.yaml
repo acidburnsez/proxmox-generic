@@ -1,0 +1,72 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: requestrr-config-pvc
+  namespace: media
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: requestrr
+  namespace: media
+  labels:
+    app: requestrr
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: requestrr
+  template:
+    metadata:
+      labels:
+        app: requestrr
+    spec:
+      containers:
+      - name: requestrr
+        image: lscr.io/linuxserver/requestrr:latest
+        ports:
+        - containerPort: 4545
+          name: http
+        env:
+        - name: PUID
+          value: "0"
+        - name: PGID
+          value: "0"
+        - name: TZ
+          value: "Europe/London"
+        volumeMounts:
+        - name: config-volume
+          mountPath: /config
+        resources:
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+          requests:
+            cpu: "50m"
+            memory: "128Mi"
+      volumes:
+      - name: config-volume
+        persistentVolumeClaim:
+          claimName: requestrr-config-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: requestrr-service
+  namespace: media
+spec:
+  type: LoadBalancer
+  ports:
+  - port: 4545
+    targetPort: 4545
+    protocol: TCP
+    name: http
+  selector:
+    app: requestrr

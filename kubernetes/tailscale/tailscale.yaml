@@ -1,0 +1,75 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tailscale
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: tailscale-auth
+  namespace: tailscale
+type: Opaque
+stringData:
+  authkey: "tskey-auth-k6FByAUeB611CNTRL-wJGHnZeRHzNRAupxFS65zNcu7g5aDDb5F"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: tailscale-pvc
+  namespace: tailscale
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: longhorn-single
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tailscale
+  namespace: tailscale
+spec:
+  replicas: 1 # Scaled up to 1 to enable subnet routing
+  selector:
+    matchLabels:
+      app: tailscale
+  template:
+    metadata:
+      labels:
+        app: tailscale
+    spec:
+      containers:
+      - name: tailscale
+        image: tailscale/tailscale:latest
+        env:
+        - name: TS_KUBE_SECRET
+          value: ""
+        - name: TS_AUTHKEY
+          valueFrom:
+            secretKeyRef:
+              name: tailscale-auth
+              key: authkey
+        - name: TS_ROUTES
+          value: "192.168.11.0/24"
+        - name: TS_EXTRA_ARGS
+          value: "--hostname=proxmox-personal-production --accept-dns=false"
+        - name: TS_STATE_DIR
+          value: /var/lib/tailscale
+        securityContext:
+          capabilities:
+            add:
+            - NET_ADMIN
+        volumeMounts:
+        - name: state
+          mountPath: /var/lib/tailscale
+        - name: tun
+          mountPath: /dev/net/tun
+      volumes:
+      - name: state
+        persistentVolumeClaim:
+          claimName: tailscale-pvc
+      - name: tun
+        hostPath:
+          path: /dev/net/tun

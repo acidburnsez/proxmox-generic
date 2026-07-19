@@ -1,0 +1,19 @@
+#cloud-config
+users:
+  - name: debian
+    groups: sudo
+    shell: /bin/bash
+    sudo: ['ALL=(ALL) NOPASSWD:ALL']
+    ssh_authorized_keys:
+      - ssh-ed25519 <YOUR_PUBLIC_SSH_KEY> user@example.com
+      - ssh-ed25519 <YOUR_PUBLIC_SSH_KEY> user@example.com
+  - name: root
+    ssh_authorized_keys:
+      - ssh-ed25519 <YOUR_PUBLIC_SSH_KEY> user@example.com
+      - ssh-ed25519 <YOUR_PUBLIC_SSH_KEY> user@example.com
+packages:
+  - qemu-guest-agent
+  - curl
+runcmd:
+  - systemctl enable qemu-guest-agent
+  - systemctl start qemu-guest-agent

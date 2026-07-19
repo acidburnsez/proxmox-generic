@@ -1,0 +1,37 @@
+name: Kubernetes Validation CI
+
+on:
+  push:
+    paths:
+      - "kubernetes/**"
+      - ".gitea/workflows/k8s-validate.yaml"
+  pull_request:
+    paths:
+      - "kubernetes/**"
+
+jobs:
+  validate:
+    name: Lint & Validate Kubernetes Specs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Install Linting Tools
+        run: |
+          apt-get update && apt-get install -y wget python3-yaml
+          # Install Kubeconform
+          wget -q https://github.com/yannh/kubeconform/releases/download/v0.6.4/kubeconform-linux-amd64.tar.gz -O /tmp/kubeconform.tar.gz
+          tar -xzf /tmp/kubeconform.tar.gz -C /usr/local/bin/ kubeconform
+          
+          # Install Helm
+          wget -q https://get.helm.sh/helm-v3.14.0-linux-amd64.tar.gz -O /tmp/helm.tar.gz
+          tar -xzf /tmp/helm.tar.gz -C /usr/local/bin/ --strip-components=1 linux-amd64/helm
+
+      - name: Validate Plain Manifests (Kubeconform)
+        run: |
+          kubeconform -summary -ignore-missing-schemas kubernetes/
+
+      - name: Lint ArgoCD Application Configuration
+        run: |
+          python3 -c "import yaml; list(yaml.safe_load_all(open('kubernetes/argocd/applications.yaml')))"

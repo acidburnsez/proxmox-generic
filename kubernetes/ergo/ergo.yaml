@@ -1,0 +1,285 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: irc
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ergo-tls
+  namespace: irc
+type: kubernetes.io/tls
+stringData:
+  tls.crt: |
+    -----BEGIN CERTIFICATE-----
+    MIIDiDCCAw2gAwIBAgISBYRb+btYRzFAg+sFAKomxghuMAoGCCqGSM49BAMDMDMx
+    CzAJBgNVBAYTAlVTMRYwFAYDVQQKEw1MZXQncyBFbmNyeXB0MQwwCgYDVQQDEwNZ
+    RTEwHhcNMjYwNjIxMjI0MzQ2WhcNMjYwOTE5MjI0MzQ1WjAXMRUwEwYDVQQDEwxp
+    cmMuMDBzZWMudWswWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAASmyhS5Nb8T5a7e
+    VbdeTEqKQSft8vutSNT8oZR0rTx443wRpzIT4BJCxO3XjAmtHKFu/a6SVVZStca+
+    fsjqoNpMo4ICGzCCAhcwDgYDVR0PAQH/BAQDAgeAMBMGA1UdJQQMMAoGCCsGAQUF
+    BwMBMAwGA1UdEwEB/wQCMAAwHQYDVR0OBBYEFC9zvLiKnktWU/4RtHykF299zKWS
+    MB8GA1UdIwQYMBaAFLsgykcL/tflnPmPCSqjjDdFsbzYMDMGCCsGAQUFBwEBBCcw
+    JTAjBggrBgEFBQcwAoYXaHR0cDovL3llMS5pLmxlbmNyLm9yZy8wFwYDVR0RBBAw
+    DoIMaXJjLjAwc2VjLnVrMBMGA1UdIAQMMAowCAYGZ4EMAQIBMC8GA1UdHwQoMCYw
+    JKAioCCGHmh0dHA6Ly95ZTEuYy5sZW5jci5vcmcvMTExLmNybDCCAQwGCisGAQQB
+    1nkCBAIEgf0EgfoA+AB1AK9niDtXsE7dj6bZfvYuqOuBCsdxYPAkXlXWDC/nhYc6
+    AAABnuyQPo4AAAQDAEYwRAIgO8cIflyNR0z/YcC+BHFJkFfuadTXBqlTcRzw3vgq
+    CRkCIAeTYI9u0PuRdEoFsprRirZKoxaq1Gx5eqGy0eI/ZFz2AH8AbP5QGUOoXqkW
+    vFLRM+TcyR7xQRx9JYQg0XOAnhgY6zoAAAGe7JBAZAAIAAAFABGBfhEEAwBIMEYC
+    IQC2wurJQLhxcuKneyst8bDbsm0ukXlk5FGCYbDvaG/hrAIhANR24X8VyF2mp+sX
+    hjZuRR2DglqCWDmn8yi5CgUm5VSnMAoGCCqGSM49BAMDA2kAMGYCMQCDc7OoJfcw
+    XQ73Ouwm/nszVr8DVuQMwhG3F33jfTjGtBKUR3WIOq/s7GiE50fK9XICMQDAJNzb
+    qC1QGv01aeOzwOmcKICGHt33pRFnHTW0gxxrI72gXp5strzAEotN2OkJ8ck=
+    -----END CERTIFICATE-----
+    -----BEGIN CERTIFICATE-----
+    MIICizCCAhGgAwIBAgIQXd1w3TH4AchcGGp6BLgK/jAKBggqhkjOPQQDAzAuMQsw
+    CQYDVQQGEwJVUzENMAsGA1UEChMESVNSRzEQMA4GA1UEAxMHUm9vdCBZRTAeFw0y
+    NTA5MDMwMDAwMDBaFw0yODA5MDIyMzU5NTlaMDMxCzAJBgNVBAYTAlVTMRYwFAYD
+    VQQKEw1MZXQncyBFbmNyeXB0MQwwCgYDVQQDEwNZRTEwdjAQBgcqhkjOPQIBBgUr
+    gQQAIgNiAAQHZVB1/mimla2hfSurylScjPMZaOJXLz/NnAc2sylm8WDyhU9Ccp+z
+    ASQi5vSwGGJjSGklkD9fdPR8GpyDIOIjCEfrnbt/v+ZSEPLLEGbaM6EccDbN7p9x
+    teIm2Avf+ryjge4wgeswDgYDVR0PAQH/BAQDAgGGMBMGA1UdJQQMMAoGCCsGAQUF
+    BwMBMBIGA1UdEwEB/wQIMAYBAf8CAQAwHQYDVR0OBBYEFLsgykcL/tflnPmPCSqj
+    jDdFsbzYMB8GA1UdIwQYMBaAFKPIJlqOoUzQNWP8myPIOq5W809WMDIGCCsGAQUF
+    BwEBBCYwJDAiBggrBgEFBQcwAoYWaHR0cDovL3llLmkubGVuY3Iub3JnLzATBgNV
+    HSAEDDAKMAgGBmeBDAECATAnBgNVHR8EIDAeMBygGqAYhhZodHRwOi8veWUuYy5s
+    ZW5jci5vcmcvMAoGCCqGSM49BAMDA2gAMGUCMQDgjUEahFT/h3DRakqiPZpLvPgf
+    Zwkt6K2EOMmh1nvEzl83eMLYcod4GCl3b0J1Nn0CMBNYmEQJb4CEG5WoOe7aRn/L
+    VKu6saHmHEynI7ysIPd8zQsK1HdmhlHKlw9Z5GpGvA==
+    -----END CERTIFICATE-----
+    -----BEGIN CERTIFICATE-----
+    MIICpjCCAiugAwIBAgIRAIchZfw0tuX7qK3Vs3BftTowCgYIKoZIzj0EAwMwTzEL
+    MAkGA1UEBhMCVVMxKTAnBgNVBAoTIEludGVybmV0IFNlY3VyaXR5IFJlc2VhcmNo
+    IEdyb3VwMRUwEwYDVQQDEwxJU1JHIFJvb3QgWDIwHhcNMjYwNTEzMDAwMDAwWhcN
+    MzIwOTAyMjM1OTU5WjAuMQswCQYDVQQGEwJVUzENMAsGA1UEChMESVNSRzEQMA4G
+    A1UEAxMHUm9vdCBZRTB2MBAGByqGSM49AgEGBSuBBAAiA2IABDwS/6vhrcVqcbBo
+    +wgdI3fwn9x7DNJJOY/lTOti0vkwuRN87RhEhTH17E7XyFjWsPYhIPt/wzOqxTd2
+    b+4ZJNy9ID04YywF9U5zasDVyGSNErVNtz8uSGh5izW87j77GaOB6zCB6DAOBgNV
+    HQ8BAf8EBAMCAQYwEwYDVR0lBAwwCgYIKwYBBQUHAwEwDwYDVR0TAQH/BAUwAwEB
+    /zAdBgNVHQ4EFgQUo8gmWo6hTNA1Y/ybI8g6rlbzT1YwHwYDVR0jBBgwFoAUfEKW
+    rt5LSDv6kviejM9ti6lyN5UwMgYIKwYBBQUHAQEEJjAkMCIGCCsGAQUFBzAChhZo
+    dHRwOi8veDIuaS5sZW5jci5vcmcvMBMGA1UdIAQMMAowCAYGZ4EMAQIBMCcGA1Ud
+    HwQgMB4wHKAaoBiGFmh0dHA6Ly94Mi5jLmxlbmNyLm9yZy8wCgYIKoZIzj0EAwMD
+    aQAwZgIxAMU19WCtmxVND8UHBZRoma49Z7jPs64Dma0eTu1OChVbB/2J7GV3nvYK
+    Ax54uk1G9QIxAO0miLVJu8PLNiXXXkiE/gsK3CTRTF/aeo4bMX42Zw40csRU6AC2
+    6hSW1/IWaas6dg==
+    -----END CERTIFICATE-----
+    -----BEGIN CERTIFICATE-----
+    MIIEcDCCAligAwIBAgIQbI8dxyfHEX97r4U6yYD5zTANBgkqhkiG9w0BAQsFADBP
+    MQswCQYDVQQGEwJVUzEpMCcGA1UEChMgSW50ZXJuZXQgU2VjdXJpdHkgUmVzZWFy
+    Y2ggG3JvdXAxFTATBgNVBAMTDElTUkcgUm9vdCBYMTAeFw0yNjA1MTMwMDAwMDBa
+    Fw0zMjA5MDIyMzU5NTlaME8xCzAJBgNVBAYTAlVTMSkwJwYDVQQKEyBJbnRlcm5l
+    dCBTZWN1cml0eSBSZXNlYXJjaCBHcm91cDEVMBMGA1UEAxMMSVNSRyBSb290IFgy
+    MHYwEAYHKoZIzj0CAQYFK4EEACIDYgAEzZvVn4CDCuwJSvMWSj5cz3es3mcFDR0H
+    ttwW+1qLFNvicWDEukWVEYmO6gbf9yoWHKS5xcUy4APgHoIYOIvXRdgKam7mAHf7
+    AlF9ItgKbppbd9/w+kHsOdx1ymgHDB/qo4H1MIHyMA4GA1UdDwEB/wQEAwIBBjAd
+    BgNVHSUEFjAUBggrBgEFBQcDAQYIKwYBBQUHAwIwDwYDVR0TAQH/BAUwAwEB/zAd
+    BgNVHQ4EFgQUfEKWrt5LSDv6kviejM9ti6lyN5UwHwYDVR0jBBgwFoAUebRZ5nu2
+    5eQBc4AIiMgaWPbpm24wMgYIKwYBBQUHAQEEJjAkMCIGCCsGAQUFBzAChhZodHRw
+    Oi8veDEuaS5sZW5jci5vcmcvMBMGA1UdIAQMMAowCAYGZ4EMAQIBMCcGA1UdHwQg
+    MB4wHKAaoBiGFmh0dHA6Ly94MS5jLmxlbmNyLm9yZy8wDQYJKoZIhvcNAQELBQAD
+    ggIBAD2/e9frmMxNpCV03qUHegg+MV2wz9644YoXdqtH8RyWYcBO7xfjjGEXdU1e
+    /o0OkEFiynUCOSIk/vLLo7ttz6CPAeNlWfC0XNkoGeWgK6jjXvozBaGuGH5n0Ufo
+    shMeWTuURqNN5G00sSXDTBrpp2+mgvdZQjb8K11TYMA25QA+YHNfbIEL0BniAhKS
+    2gsnJjSzrdZLI+EZ7SEyqdR2rkjd1KutLDU+n3TFyxjniZVGur4YlhMP3mY/dV95
+    IruAkkjOZier6hGBdEgZXXvaCz9u9iVEadsIE75pAGL8oHV5vxdARDiotRpul1IN
+    /UZwzAbrfUFcw1HkAcYD/mlZfnQ2ieCF2MS7j3Vhv7JPDKp45fmykmzYNSrumRW0
+    upFFKDBOoF7hsOb7oLyHS+Uft6jOUfOrogj8YUx38hKb2K20r42OgsSdDdxdeYWc
+    MS3Sb6mwJeSZEYxJ2gaXnDSPaKhhrNkYwljyVQyr4Nq+MEJytXNTnHqaAcrNwZlV
+    pcJL1KBnMrMjP7eanvUwL3FYj3cF17jtboLt7gLoi4+2rWZFvn+w54jmd/FIuhhZ
+    cEaU/wvU6BUNMtcVquVGHp7itQeDth5j+XL3j4WJ2SABwzUl6OeYdgpIt/ITZa+p
+    TT0mQ/r5XyA4MEAiabn7XJjvCERlF2dcn2wqJw+CreTkkQ2R
+    -----END CERTIFICATE-----
+  tls.key: |
+    -----BEGIN EC PRIVATE KEY-----
+    MHcCAQEEIHfhnxl8KU7wv2e1dgsmSL8YN0teYEV6vu7oZsmxGUOQoAoGCCqGSM49
+    AwEHoUQDQgAEpsoUuTW/E+Wu3lW3XkxKikEn7fL7rUjU/KGUdK08eON8EacyE+AS
+    QsTt14wJrRyhbv2uklVWUrXGvn7I6qDaTA==
+    -----END EC PRIVATE KEY-----
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ergo-config
+  namespace: irc
+data:
+  ircd.yaml: |
+    network:
+      name: HomeNet
+
+    server:
+      name: irc.example.com
+      listeners:
+        ":6667": {}
+        ":6697":
+          tls:
+            cert: /ircd/certs/tls.crt
+            key:  /ircd/certs/tls.key
+      motd: ""
+      motd-formatting: true
+      max-sendq: 16M
+      relaymsg:
+        enabled: false
+
+    limits:
+      nicklen: 32
+      channellen: 64
+      awaylen: 500
+      kicklen: 1000
+      topiclen: 1000
+
+    datastore:
+      path: /ircd/ircd.db
+
+    accounts:
+      authentication-enabled: true
+      registration:
+        enabled: true
+        allow-before-connect: true
+        throttling:
+          enabled: false
+        email-verification:
+          enabled: false
+      nick-reservation:
+        enabled: true
+        method: strict
+      require-sasl:
+        enabled: false
+
+    channels:
+      default-modes: +nt
+      registration:
+        enabled: true
+
+    history:
+      enabled: true
+      channel-length: 1024
+      client-length: 256
+      autoresize-window: 3d
+      autoreplay-on-join: 0
+      chathistory-maxmessages: 1000
+      retention:
+        allow-individual-user-delete: true
+        enable-account-indexing: true
+
+    logging:
+      - method: stderr
+        level: warn
+        type: "* -userinput -useroutput"
+
+    debug:
+      recover-from-errors: true
+
+    oper-classes:
+      admin:
+        capabilities:
+          - kill
+          - ban
+          - nofakelag
+          - relaymsg
+          - vhosts
+          - sajoin
+          - samode
+          - snomasks
+          - roleplay
+          - rehash
+          - accreg
+          - chanreg
+          - history
+          - defcon
+          - massmessage
+
+    opers:
+      acidburn:
+        class: admin
+        password: "$2a$04$5hTZmlWq06IhITZGCnU1feLChPPfVtkMyvITn2RZGJZv1EAQy.OuC"
+      oninia:
+        class: admin
+        password: "$2a$04$IOs6Xjzv8q2uUq9NIau.c.UAfJumi33Rii3skf3NCH.6y94cZkfDC"
+      thatsecuritykai:
+        class: admin
+        password: "$2a$04$ItKZvC3U3vZf1J6a6nXdlOW.OF6aXvm9krKzwGi3B5TrfRhviNpza"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ergo-data-pvc
+  namespace: irc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ergo
+  namespace: irc
+  labels:
+    app: ergo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ergo
+  template:
+    metadata:
+      labels:
+        app: ergo
+    spec:
+      containers:
+      - name: ergo
+        image: ghcr.io/ergochat/ergo:latest
+        ports:
+        - containerPort: 6667
+          name: irc-plain
+        - containerPort: 6697
+          name: irc-tls
+        volumeMounts:
+        - name: config-volume
+          mountPath: /ircd/ircd.yaml
+          subPath: ircd.yaml
+        - name: tls-volume
+          mountPath: /ircd/certs
+        - name: data-volume
+          mountPath: /ircd
+        resources:
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+          requests:
+            cpu: "50m"
+            memory: "128Mi"
+      volumes:
+      - name: config-volume
+        configMap:
+          name: ergo-config
+      - name: tls-volume
+        secret:
+          secretName: ergo-tls
+      - name: data-volume
+        persistentVolumeClaim:
+          claimName: ergo-data-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ergo-service
+  namespace: irc
+spec:
+  type: LoadBalancer
+  ports:
+  - port: 6667
+    targetPort: 6667
+    protocol: TCP
+    name: irc-plain
+  - port: 6697
+    targetPort: 6697
+    protocol: TCP
+    name: irc-tls
+  selector:
+    app: ergo

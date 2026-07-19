@@ -1,0 +1,1606 @@
+# Declarative Kubernetes Manifests for NeoRelay Stack (00secChat)
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: neobear-nfs-pv
+spec:
+  capacity:
+    storage: 10Gi
+  accessModes:
+    - ReadOnlyMany
+  nfs:
+    server: 192.168.11.110
+    path: /mnt/media/neobear/html
+  mountOptions:
+    - nolock
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: neobear-nfs-pvc
+  namespace: irc
+spec:
+  accessModes:
+    - ReadOnlyMany
+  storageClassName: ""
+  volumeName: neobear-nfs-pv
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: neodrop-data-pvc
+  namespace: irc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: neoguard-data-pvc
+  namespace: irc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: neorelay-secrets
+  namespace: irc
+type: Opaque
+stringData:
+  token_hash: |
+    99eb65faae58c7bc92be7cc4306f02196050287e80014b2904f6398113fc0fe2
+  neoguard_key: |
+    f76b1b0daed59f14ee607ab94e4a89083c6858d19e576927b189ee4b2328ad20
+  catalog_key: |
+    784290709276f38809bb036cb13150acd9b6891473072a82f74c5dd086b095a3
+  manager_token: |
+    89a0bff3489ab4291f5f8222648ba1ee2a69296a91167c56
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: neodrop-config
+  namespace: irc
+data:
+  neodrop_server.py: |
+    #!/usr/bin/python3
+    import base64
+    import hashlib
+    import hmac
+    import ipaddress
+    import json
+    import os
+    import re
+    import secrets
+    import shutil
+    import sqlite3
+    import threading
+    import time
+    import urllib.request
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from pathlib import Path
+    from urllib.parse import urlsplit
+    
+    APP_ROOT = Path("/usr/share/neodrop")
+    DATA_ROOT = Path("/data")
+    STAGING_ROOT = DATA_ROOT / "staging"
+    OBJECT_ROOT = DATA_ROOT / "objects"
+    DB_PATH = DATA_ROOT / "neodrop.sqlite3"
+    MANAGER_TOKEN_HASH_PATH = Path("/etc/neodrop/token_hash")
+    LISTEN_ADDRESS = "0.0.0.0"
+    LISTEN_PORT = 8080
+    TRUSTED_PROXY = ipaddress.ip_address("192.168.11.53")
+    TRUSTED_UPLOADERS = (
+        ipaddress.ip_network("10.42.0.0/16"),
+        ipaddress.ip_network("192.168.11.0/24"),
+        ipaddress.ip_network("100.64.0.0/10"),
+    )
+    ALLOWED_ORIGIN = "https://chat.example.com"
+    MANAGEMENT_ORIGIN = "https://drops.example.com"
+    MANAGEMENT_UPLOADERS = (
+        ipaddress.ip_network("10.42.0.0/16"),
+        ipaddress.ip_network("192.168.11.0/24"),
+        ipaddress.ip_network("100.64.0.0/10"),
+    )
+    UPLOAD_ORIGINS = (ALLOWED_ORIGIN, MANAGEMENT_ORIGIN)
+    CHUNK_SIZE = 4 * 1024 * 1024
+    PROFILES = {
+        0: (50 * 1024 * 1024, 30 * 24 * 60 * 60),
+        1: (1024 * 1024 * 1024, 7 * 24 * 60 * 60),
+    }
+    UPLOAD_TTL = 24 * 60 * 60
+    ID_RE = re.compile(r"^[A-Za-z0-9_-]{32}$")
+    UPLOAD_RE = re.compile(r"^[A-Za-z0-9_-]{22}$")
+    UNAVAILABLE = b'{"error":"unavailable"}\n'
+    DB_LOCK = threading.RLock()
+    
+    
+    def now():
+        return int(time.time())
+    
+    
+    def b64url(data):
+        return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+    
+    
+    def token_hash(token):
+        return hashlib.sha256(token.encode("ascii")).digest()
+    
+    
+    def valid_manager_token(token):
+        if not token or len(token) > 128:
+            return False
+        try:
+            expected = MANAGER_TOKEN_HASH_PATH.read_text().strip()
+            actual = hashlib.sha256(token.encode("ascii", "strict")).hexdigest()
+        except (OSError, UnicodeEncodeError):
+            return False
+        return len(expected) == 64 and hmac.compare_digest(actual, expected)
+    
+    
+    def valid_object_id(value):
+        if not ID_RE.fullmatch(value or ""):
+            return False
+        try:
+            return len(base64.urlsafe_b64decode(value + "==")) == 24
+        except (ValueError, TypeError):
+            return False
+    
+    
+    def database():
+        conn = sqlite3.connect(DB_PATH, timeout=30)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("PRAGMA journal_mode=WAL")
+        return conn
+    
+    
+    def initialize_database():
+        DATA_ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
+        STAGING_ROOT.mkdir(mode=0o700, exist_ok=True)
+        OBJECT_ROOT.mkdir(mode=0o700, exist_ok=True)
+        with database() as conn:
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS tombstones (
+                    object_id TEXT PRIMARY KEY,
+                    first_seen INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS uploads (
+                    upload_id TEXT PRIMARY KEY,
+                    object_id TEXT UNIQUE NOT NULL,
+                    token_hash BLOB NOT NULL,
+                    profile INTEGER NOT NULL,
+                    size INTEGER NOT NULL,
+                    chunks INTEGER NOT NULL,
+                    created_at INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS objects (
+                    object_id TEXT PRIMARY KEY,
+                    token_hash BLOB NOT NULL,
+                    profile INTEGER NOT NULL,
+                    size INTEGER NOT NULL,
+                    chunks INTEGER NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    expires_at INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS objects_expiry ON objects(expires_at);
+                CREATE INDEX IF NOT EXISTS uploads_created ON uploads(created_at);
+                """
+            )
+    
+    
+    def object_path(object_id):
+        return OBJECT_ROOT / object_id[:2] / object_id
+    
+    
+    def report_invalid(client_ip, source, detail, destination_port=None):
+        event = {
+            "ip": str(client_ip),
+            "source": source,
+            "detail": detail[:160],
+        }
+        if destination_port is not None:
+            event["destination_port"] = destination_port
+        payload = json.dumps(event).encode("utf-8")
+        request = urllib.request.Request(
+            "http://neoguard-service.irc.svc.cluster.local:8081/attempt",
+            data=payload,
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            urllib.request.urlopen(request, timeout=0.25).close()
+        except Exception:
+            pass
+    
+    
+    def cleanup():
+        cutoff = now() - UPLOAD_TTL
+        expired_paths = []
+        object_paths = []
+        with DB_LOCK, database() as conn:
+            for row in conn.execute("SELECT upload_id FROM uploads WHERE created_at <= ?", (cutoff,)):
+                expired_paths.append(STAGING_ROOT / row["upload_id"])
+            conn.execute("DELETE FROM uploads WHERE created_at <= ?", (cutoff,))
+            for row in conn.execute("SELECT object_id FROM objects WHERE expires_at <= ?", (now(),)):
+                object_paths.append((row["object_id"], object_path(row["object_id"])))
+        for path in expired_paths:
+            shutil.rmtree(path, ignore_errors=True)
+        for object_id, path in object_paths:
+            try:
+                shutil.rmtree(path)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                continue
+            with DB_LOCK, database() as conn:
+                conn.execute("DELETE FROM objects WHERE object_id = ? AND expires_at <= ?", (object_id, now()))
+    
+    
+    def cleanup_loop():
+        while True:
+            try:
+                cleanup()
+            except Exception:
+                pass
+            time.sleep(3600)
+    
+    
+    class NeoDropHandler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+        server_version = "NeoDrop"
+        sys_version = ""
+    
+        def log_message(self, fmt, *args):
+            print("%s %s" % (self.address_string(), fmt % args), flush=True)
+    
+        def client_ip(self):
+            peer = ipaddress.ip_address(self.client_address[0])
+            if peer == TRUSTED_PROXY:
+                forwarded = self.headers.get("X-Real-IP", "")
+                try:
+                    return ipaddress.ip_address(forwarded)
+                except ValueError:
+                    return peer
+            return peer
+    
+        def destination_port(self):
+            peer = ipaddress.ip_address(self.client_address[0])
+            if peer == TRUSTED_PROXY:
+                value = self.headers.get("X-Forwarded-Port", "")
+                if value.isdecimal() and 1 <= int(value) <= 65535:
+                    return int(value)
+                return None
+            return int(self.server.server_address[1])
+    
+        def is_trusted_uploader(self):
+            address = self.client_ip()
+            return any(address in network for network in TRUSTED_UPLOADERS)
+    
+        def send_headers(self, status, content_type, length, extra=None):
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(length))
+            self.send_header("Cache-Control", "private, no-store, max-age=0")
+            self.send_header("Pragma", "no-cache")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            if extra:
+                for key, value in extra.items():
+                    self.send_header(key, value)
+            self.end_headers()
+    
+        def send_json(self, status, value, cors=False):
+            body = json.dumps(value, separators=(",", ":")).encode("utf-8") + b"\n"
+            extra = {}
+            if cors:
+                origin = self.headers.get("Origin", "")
+                if origin in UPLOAD_ORIGINS:
+                    extra.update({
+                        "Access-Control-Allow-Origin": origin,
+                        "Vary": "Origin",
+                    })
+            self.send_headers(status, "application/json", len(body), extra)
+            if self.command != "HEAD":
+                self.wfile.write(body)
+    
+        def unavailable(self, detail="unavailable"):
+            report_invalid(self.client_ip(), "drops", detail, self.destination_port())
+            self.send_headers(404, "application/json", len(UNAVAILABLE))
+            if self.command != "HEAD":
+                self.wfile.write(UNAVAILABLE)
+    
+        def forbidden_upload(self, detail):
+            self.close_connection = True
+            report_invalid(self.client_ip(), "drops", detail, self.destination_port())
+            self.send_json(403, {"error": "forbidden"}, cors=True)
+    
+        def read_json(self, maximum=8192):
+            try:
+                length = int(self.headers.get("Content-Length", "-1"))
+            except ValueError:
+                return None
+            if length < 0 or length > maximum:
+                return None
+            try:
+                return json.loads(self.rfile.read(length))
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                return None
+    
+        def upload_authorized(self):
+            origin = self.headers.get("Origin")
+            address = self.client_ip()
+            if origin == ALLOWED_ORIGIN:
+                source_allowed = any(address in network for network in TRUSTED_UPLOADERS)
+            elif origin == MANAGEMENT_ORIGIN:
+                source_allowed = any(address in network for network in MANAGEMENT_UPLOADERS)
+            else:
+                source_allowed = False
+            if not source_allowed:
+                self.forbidden_upload("external upload")
+                return False
+            if origin not in UPLOAD_ORIGINS:
+                self.forbidden_upload("invalid upload origin")
+                return False
+            return True
+    
+        def bearer(self):
+            value = self.headers.get("Authorization", "")
+            if not value.startswith("Bearer "):
+                return ""
+            return value[7:]
+    
+        def manager_authorized(self):
+            if not self.is_trusted_uploader():
+                return False
+            return valid_manager_token(self.bearer())
+    
+        def lookup_upload(self, upload_id):
+            token = self.bearer()
+            if not token or len(token) > 128:
+                return None
+            with database() as conn:
+                row = conn.execute("SELECT * FROM uploads WHERE upload_id = ?", (upload_id,)).fetchone()
+            if not row or not hmac.compare_digest(row["token_hash"], token_hash(token)):
+                return None
+            if row["created_at"] + UPLOAD_TTL <= now():
+                return None
+            return row
+    
+        def do_OPTIONS(self):
+            if not self.upload_authorized():
+                return
+            path = urlsplit(self.path).path
+            requested = self.headers.get("Access-Control-Request-Method", "")
+            valid = (
+                (requested == "POST" and (
+                    path == "/api/v1/uploads"
+                    or re.fullmatch(r"/api/v1/uploads/[A-Za-z0-9_-]{22}/commit", path)
+                ))
+                or (requested == "PUT" and (
+                    re.fullmatch(r"/api/v1/uploads/[A-Za-z0-9_-]{22}/metadata", path)
+                    or re.fullmatch(r"/api/v1/uploads/[A-Za-z0-9_-]{22}/chunks/\d{1,4}", path)
+                ))
+                or (requested == "DELETE" and re.fullmatch(
+                    r"/api/v1/objects/[A-Za-z0-9_-]{32}", path
+                ))
+            )
+            requested_headers = {
+                value.strip().lower()
+                for value in self.headers.get("Access-Control-Request-Headers", "").split(",")
+                if value.strip()
+            }
+            if not valid or not requested_headers.issubset({"authorization", "content-type"}):
+                return self.unavailable("invalid preflight")
+            self.send_response(204)
+            self.send_header("Content-Length", "0")
+            self.send_header("Access-Control-Allow-Origin", self.headers["Origin"])
+            self.send_header("Access-Control-Allow-Methods", requested + ", OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
+            self.send_header("Access-Control-Max-Age", "600")
+            self.send_header("Vary", "Origin")
+            self.end_headers()
+    
+        def do_POST(self):
+            path = urlsplit(self.path).path
+            if path == "/api/v1/uploads":
+                return self.create_upload()
+            match = re.fullmatch(r"/api/v1/uploads/([A-Za-z0-9_-]{22})/commit", path)
+            if match:
+                return self.commit_upload(match.group(1))
+            self.unavailable("invalid POST path")
+    
+        def create_upload(self):
+            if not self.upload_authorized():
+                return
+            if self.headers.get("Content-Type") != "application/json":
+                self.close_connection = True
+                return self.send_json(415, {"error": "invalid request"}, cors=True)
+            data = self.read_json()
+            if not isinstance(data, dict):
+                return self.send_json(400, {"error": "invalid request"}, cors=True)
+            try:
+                object_id = data["id"]
+                profile = int(data["profile"])
+                size = int(data["size"])
+                chunk_size = int(data["chunkSize"])
+                chunks = int(data["chunks"])
+            except (KeyError, TypeError, ValueError):
+                return self.send_json(400, {"error": "invalid request"}, cors=True)
+            if not valid_object_id(object_id) or profile not in PROFILES:
+                return self.send_json(400, {"error": "invalid request"}, cors=True)
+            maximum, _ = PROFILES[profile]
+            expected_chunks = (size + CHUNK_SIZE - 1) // CHUNK_SIZE if size else 0
+            if size < 0 or size > maximum or chunk_size != CHUNK_SIZE or chunks != expected_chunks:
+                return self.send_json(400, {"error": "invalid request"}, cors=True)
+            upload_id = b64url(secrets.token_bytes(16))
+            token = b64url(secrets.token_bytes(32))
+            created = now()
+            with DB_LOCK:
+                try:
+                    with database() as conn:
+                        conn.execute("INSERT INTO tombstones VALUES (?, ?)", (object_id, created))
+                        conn.execute(
+                            "INSERT INTO uploads VALUES (?, ?, ?, ?, ?, ?, ?)",
+                            (upload_id, object_id, token_hash(token), profile, size, chunks, created),
+                        )
+                    stage = STAGING_ROOT / upload_id
+                    (stage / "chunks").mkdir(mode=0o700, parents=True)
+                except (sqlite3.IntegrityError, FileExistsError):
+                    return self.send_json(409, {"error": "identifier unavailable"}, cors=True)
+            self.send_json(201, {
+                "v": 1,
+                "uploadId": upload_id,
+                "uploadToken": token,
+                "sessionExpiresAt": created + UPLOAD_TTL,
+            }, cors=True)
+    
+        def do_PUT(self):
+            path = urlsplit(self.path).path
+            metadata = re.fullmatch(r"/api/v1/uploads/([A-Za-z0-9_-]{22})/metadata", path)
+            chunk = re.fullmatch(r"/api/v1/uploads/([A-Za-z0-9_-]{22})/chunks/(\d{1,4})", path)
+            if metadata:
+                return self.put_record(metadata.group(1), None)
+            if chunk:
+                return self.put_record(chunk.group(1), int(chunk.group(2)))
+            self.unavailable("invalid PUT path")
+    
+        def put_record(self, upload_id, index):
+            if not self.upload_authorized():
+                return
+            if self.headers.get("Content-Type") != "application/octet-stream":
+                self.close_connection = True
+                return self.send_json(415, {"error": "invalid record"}, cors=True)
+            row = self.lookup_upload(upload_id)
+            if not row:
+                return self.forbidden_upload("invalid upload authorization")
+            try:
+                length = int(self.headers.get("Content-Length", "-1"))
+            except ValueError:
+                length = -1
+            if index is None:
+                target = STAGING_ROOT / upload_id / "metadata.bin"
+                valid_length = 16 <= length <= 4112
+            else:
+                if index < 0 or index >= row["chunks"]:
+                    valid_length = False
+                    expected = -1
+                else:
+                    remaining = row["size"] - index * CHUNK_SIZE
+                    expected = min(CHUNK_SIZE, remaining) + 16
+                    valid_length = length == expected
+                target = STAGING_ROOT / upload_id / "chunks" / ("%08d.bin" % index)
+            if not valid_length:
+                return self.send_json(400, {"error": "invalid record"}, cors=True)
+            body = self.rfile.read(length)
+            if len(body) != length:
+                return self.send_json(400, {"error": "incomplete record"}, cors=True)
+            if target.exists():
+                if target.read_bytes() != body:
+                    return self.send_json(409, {"error": "immutable record"}, cors=True)
+            else:
+                temporary = target.with_name(target.name + "." + secrets.token_hex(8) + ".tmp")
+                with open(temporary, "xb") as handle:
+                    handle.write(body)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(temporary, target)
+            self.send_json(200, {"ok": True}, cors=True)
+    
+        def commit_upload(self, upload_id):
+            if not self.upload_authorized():
+                return
+            if self.headers.get("Content-Type") != "application/json":
+                self.close_connection = True
+                return self.send_json(415, {"error": "invalid request"}, cors=True)
+            data = self.read_json(maximum=64)
+            if data != {}:
+                return self.send_json(400, {"error": "invalid request"}, cors=True)
+            row = self.lookup_upload(upload_id)
+            if not row:
+                return self.forbidden_upload("invalid commit authorization")
+            stage = STAGING_ROOT / upload_id
+            metadata = stage / "metadata.bin"
+            if not metadata.is_file() or not 16 <= metadata.stat().st_size <= 4112:
+                return self.send_json(409, {"error": "upload incomplete"}, cors=True)
+            for index in range(row["chunks"]):
+                path = stage / "chunks" / ("%08d.bin" % index)
+                remaining = row["size"] - index * CHUNK_SIZE
+                if not path.is_file() or path.stat().st_size != min(CHUNK_SIZE, remaining) + 16:
+                    return self.send_json(409, {"error": "upload incomplete"}, cors=True)
+            created = now()
+            expires = created + PROFILES[row["profile"]][1]
+            destination = object_path(row["object_id"])
+            destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            moved = False
+            with DB_LOCK:
+                try:
+                    os.rename(stage, destination)
+                    moved = True
+                    with database() as conn:
+                        conn.execute(
+                            "INSERT INTO objects VALUES (?, ?, ?, ?, ?, ?, ?)",
+                            (row["object_id"], row["token_hash"], row["profile"], row["size"],
+                             row["chunks"], created, expires),
+                        )
+                        conn.execute("DELETE FROM uploads WHERE upload_id = ?", (upload_id,))
+                except Exception:
+                    if moved and destination.exists() and not stage.exists():
+                        os.rename(destination, stage)
+                    raise
+            self.send_json(200, {"v": 1, "expiresAt": expires}, cors=True)
+    
+        def do_DELETE(self):
+            path = urlsplit(self.path).path
+            match = re.fullmatch(r"/api/v1/objects/([A-Za-z0-9_-]{32})", path)
+            if not match or not self.upload_authorized():
+                return
+            if self.headers.get("Content-Length", "0") != "0":
+                self.close_connection = True
+                return self.send_json(400, {"error": "invalid request"}, cors=True)
+            object_id = match.group(1)
+            token = self.bearer()
+            target = object_path(object_id)
+            with DB_LOCK, database() as conn:
+                row = conn.execute("SELECT token_hash FROM objects WHERE object_id = ?", (object_id,)).fetchone()
+                if not row or not token or not hmac.compare_digest(row["token_hash"], token_hash(token)):
+                    return self.forbidden_upload("invalid delete authorization")
+                if target.exists():
+                    shutil.rmtree(target)
+                conn.execute("DELETE FROM objects WHERE object_id = ?", (object_id,))
+            self.send_json(200, {"deleted": True}, cors=True)
+    
+        def do_HEAD(self):
+            return self.do_GET()
+    
+        def do_GET(self):
+            path = urlsplit(self.path).path
+            if path == "/api/v1/manager/objects":
+                if not self.manager_authorized():
+                    return self.response_forbidden()
+                return self.manager_inventory()
+            manifest = re.fullmatch(r"/api/v1/objects/([A-Za-z0-9_-]{32})", path)
+            chunk = re.fullmatch(r"/api/v1/objects/([A-Za-z0-9_-]{32})/chunks/(\d{1,4})", path)
+            if manifest:
+                return self.get_manifest(manifest.group(1))
+            if chunk:
+                return self.get_chunk(chunk.group(1), int(chunk.group(2)))
+            if path == "/" or re.fullmatch(r"/d/[A-Za-z0-9_-]{32}", path):
+                return self.static_file("index.html")
+            if path in ("/app.js", "/style.css", "/favicon.png", "/avatar-login.jpg"):
+                return self.static_file(path[1:])
+            self.unavailable("invalid GET path")
+    
+        def response_forbidden(self):
+            self.send_json(403, {"error": "forbidden"})
+    
+        def manager_inventory(self):
+            with database() as conn:
+                rows = list(conn.execute(
+                    "SELECT object_id,profile,size,chunks,created_at,expires_at "
+                    "FROM objects ORDER BY created_at DESC LIMIT 10000"
+                ))
+            self.send_json(200, {"objects": [
+                {
+                    "id": row["object_id"],
+                    "profile": row["profile"],
+                    "size": row["size"],
+                    "chunks": row["chunks"],
+                    "createdAt": row["created_at"],
+                    "expiresAt": row["expires_at"],
+                }
+                for row in rows
+            ]})
+    
+        def active_object(self, object_id):
+            if not valid_object_id(object_id):
+                return None
+            with database() as conn:
+                return conn.execute(
+                    "SELECT * FROM objects WHERE object_id = ? AND expires_at > ?",
+                    (object_id, now()),
+                ).fetchone()
+    
+        def get_manifest(self, object_id):
+            row = self.active_object(object_id)
+            metadata = object_path(object_id) / "metadata.bin"
+            if not row or not metadata.is_file():
+                return self.unavailable("unknown object")
+            self.send_json(200, {
+                "v": 1,
+                "profile": row["profile"],
+                "size": row["size"],
+                "chunkSize": CHUNK_SIZE,
+                "chunks": row["chunks"],
+                "metadata": b64url(metadata.read_bytes()),
+                "expiresAt": row["expires_at"],
+            })
+    
+        def get_chunk(self, object_id, index):
+            row = self.active_object(object_id)
+            if not row or index < 0 or index >= row["chunks"]:
+                return self.unavailable("unknown object chunk")
+            path = object_path(object_id) / "chunks" / ("%08d.bin" % index)
+            if not path.is_file():
+                return self.unavailable("unknown object chunk")
+            length = path.stat().st_size
+            self.send_headers(200, "application/octet-stream", length)
+            if self.command != "HEAD":
+                with open(path, "rb") as handle:
+                    shutil.copyfileobj(handle, self.wfile, length=64 * 1024)
+    
+        def static_file(self, name):
+            path = APP_ROOT / name
+            if not path.is_file():
+                path = DATA_ROOT / name
+            if not path.is_file():
+                return self.unavailable("missing application asset")
+            types = {"index.html": "text/html; charset=utf-8", "app.js": "application/javascript",
+                     "style.css": "text/css", "favicon.png": "image/png",
+                     "avatar-login.jpg": "image/jpeg"}
+            body = path.read_bytes()
+            cached = name in ("favicon.png", "avatar-login.jpg")
+            extra = {"Cache-Control": "public, max-age=604800"} if cached else {"Cache-Control": "no-cache"}
+            self.send_headers(200, types[name], len(body), extra)
+            if self.command != "HEAD":
+                self.wfile.write(body)
+    
+    
+    class NeoDropServer(ThreadingHTTPServer):
+        daemon_threads = True
+        request_queue_size = 256
+    
+    
+    if __name__ == "__main__":
+        os.umask(0o077)
+        initialize_database()
+        cleanup()
+        threading.Thread(target=cleanup_loop, daemon=True).start()
+        server = NeoDropServer((LISTEN_ADDRESS, LISTEN_PORT), NeoDropHandler)
+        server.serve_forever()
+  index.html: |
+    <!doctype html>
+    <html lang="en">
+    <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      <meta name="theme-color" content="#150a24">
+      <title>00secChat - Secure File Drop</title>
+      <link rel="icon" href="/favicon.png">
+      <link rel="stylesheet" href="/style.css?v=6">
+    </head>
+    <body>
+      <main>
+        <section class="login-hero" aria-labelledby="neodrop-title">
+          <div class="login-portrait">
+            <img src="/avatar-login.jpg" alt="Operator-provided avatar">
+            <span class="portrait-code" aria-hidden="true">00sec-drops</span>
+          </div>
+          <div class="login-intro">
+            <p class="login-kicker">PRIVATE RELAY // TLS 1.3</p>
+            <h1 id="neodrop-title">00secDrops</h1>
+            <p class="login-deck">Encrypted File Drop</p>
+            <div class="login-status" aria-label="Service capabilities">
+              <span>ZERO KNOWLEDGE</span>
+              <span>CLIENT ENCRYPTED</span>
+              <span>CIPHERTEXT ONLY</span>
+            </div>
+          </div>
+        </section>
+    
+        <section id="idle" class="terminal" aria-label="NeoDrop service status">
+          <div class="terminal-bar"><span></span><span></span><span></span><b>drops@relay:~</b></div>
+          <div class="terminal-body">
+            <p><span class="prompt">&gt;&gt;</span> neodrop status --public</p>
+            <p class="terminal-title">Secure File Drop</p>
+            <p>Encrypted in your browser. The server stores ciphertext and never receives the key in this link.</p>
+            <dl>
+              <div><dt>ENCRYPTION</dt><dd>AES-256-GCM</dd></div>
+              <div><dt>ACCESS</dt><dd>CAPABILITY LINK</dd></div>
+              <div><dt>STORAGE</dt><dd>CIPHERTEXT ONLY</dd></div>
+            </dl>
+            <p class="input-line"><span class="prompt">&gt;&gt;</span> <span class="cursor" aria-hidden="true">_</span><span class="sr-only">Awaiting input</span></p>
+          </div>
+        </section>
+    
+        <section id="loading" class="panel hidden" aria-live="polite">
+          <p class="status">AUTHENTICATING ENCRYPTED OBJECT</p>
+          <div class="meter"><span id="meter-fill"></span></div>
+        </section>
+    
+        <section id="viewer" class="panel hidden">
+          <div class="file-heading">
+            <div><p class="label">DECRYPTED OBJECT</p><h1 id="file-name"></h1></div>
+            <button id="download">Download</button>
+          </div>
+          <dl class="file-details">
+            <div><dt>SIZE</dt><dd id="file-size"></dd></div>
+            <div><dt>SHA-256</dt><dd><code id="file-sha256"></code></dd></div>
+            <div><dt>TYPE</dt><dd id="file-type"></dd></div>
+            <div><dt>EXPIRES</dt><dd><time id="file-expires"></time></dd></div>
+          </dl>
+          <div id="preview" class="preview"></div>
+        </section>
+    
+        <section id="error" class="panel error hidden" role="alert">
+          <p class="status">OBJECT UNAVAILABLE</p>
+          <p>This link is invalid, expired, deleted, or could not be authenticated.</p>
+        </section>
+      </main>
+      <script src="/app.js?v=2"></script>
+    </body>
+    </html>
+  app.js: |
+    "use strict";
+    (function () {
+      const CHUNK_SIZE = 4 * 1024 * 1024;
+      const enc = new TextEncoder();
+      const dec = new TextDecoder("utf-8", {fatal:true});
+      const state = {secret:null, objectId:null, manifest:null, metadata:null, chunks:null, url:null};
+      const $ = id => document.getElementById(id);
+      const show = id => ["idle","loading","viewer","error"].forEach(x => $(x).classList.toggle("hidden", x !== id));
+      const progress = value => $("meter-fill").style.width = Math.round(value * 100) + "%";
+      const from64 = value => { const s=value.replace(/-/g,"+").replace(/_/g,"/"); const raw=atob(s+"=".repeat((4-s.length%4)%4)); return Uint8Array.from(raw,c=>c.charCodeAt(0)); };
+      const to64 = bytes => btoa(String.fromCharCode(...bytes)).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/g,"");
+      const u32 = (v,b,o) => new DataView(b.buffer).setUint32(o,v,false);
+      const u64 = (v,b,o) => new DataView(b.buffer).setBigUint64(o,BigInt(v),false);
+      function aad(type, profile, id, size, count, index, length) {
+        const out=new Uint8Array(60); out.set(enc.encode("NEODRP01")); out[8]=type; out[9]=profile; out.set(id,12);
+        u64(size,out,36); u32(CHUNK_SIZE,out,44); u32(count,out,48); u32(index,out,52); u32(length,out,56); return out;
+      }
+      function iv(type,index) { const out=new Uint8Array(12); u32(type,out,0); u64(index,out,4); return out; }
+      async function derive(secret, info, length) {
+        const base=await crypto.subtle.importKey("raw",secret,"HKDF",false,["deriveBits"]);
+        return new Uint8Array(await crypto.subtle.deriveBits({name:"HKDF",hash:"SHA-256",salt:enc.encode("00secChat_Secure_HKDF_Salt_2026_Key_Derivation"),info:enc.encode(info)},base,length*8));
+      }
+      async function aes(raw) { return crypto.subtle.importKey("raw",raw,{name:"AES-GCM"},false,["decrypt"]); }
+      async function decryptRecord(key, cipher, nonce, additional) { return new Uint8Array(await crypto.subtle.decrypt({name:"AES-GCM",iv:nonce,additionalData:additional,tagLength:128},key,cipher)); }
+      async function fetchJson(url) { const response=await fetch(url,{cache:"no-store"}); if(!response.ok) throw new Error("unavailable"); return response.json(); }
+      function classify(type) { if(/^image\/(png|jpeg|gif|webp|avif)$/i.test(type)) return "image"; if(/^text\//i.test(type)||/^(application\/(json|javascript|x-.*script))$/i.test(type)) return "text"; return "binary"; }
+      function formatSize(size) { const units=["B","KiB","MiB","GiB"]; let i=0,n=size; while(n>=1024&&i<3){n/=1024;i++;} return n.toFixed(i?1:0)+" "+units[i]; }
+      async function decryptChunk(index, key) {
+        const response=await fetch(`/api/v1/objects/${state.objectId}/chunks/${index}`,{cache:"no-store"}); if(!response.ok) throw new Error("unavailable");
+        const cipher=new Uint8Array(await response.arrayBuffer()); const plainLength=Math.min(CHUNK_SIZE,state.manifest.size-index*CHUNK_SIZE);
+        if(cipher.length!==plainLength+16) throw new Error("invalid length");
+        return decryptRecord(key,cipher,iv(1,index),aad(1,state.manifest.profile,from64(state.objectId),state.manifest.size,state.manifest.chunks,index,plainLength));
+      }
+      async function allChunks(key) { const parts=[]; for(let i=0;i<state.manifest.chunks;i++){parts.push(await decryptChunk(i,key));progress((i+1)/(state.manifest.chunks+1));} return parts; }
+      function highlightText(text) {
+        const pre=document.createElement("pre"); pre.className="text-preview"; let fenced=false;
+        text.split("\n").forEach((line,i)=>{ const span=document.createElement("span"); if(/^```/.test(line)){fenced=!fenced;span.className="code";} else if(fenced||/^ {4}/.test(line))span.className="code"; else if(/^#{1,6}\s/.test(line))span.className="heading"; else if(/^>\s?/.test(line))span.className="quote"; else if(/^\s*([-*+] |\d+\. )/.test(line))span.className="list"; span.textContent=line+(i<text.split("\n").length-1?"\n":""); pre.appendChild(span); });
+        return pre;
+      }
+      function setDetails() {
+        $("file-name").textContent=state.metadata.name;
+        $("file-size").textContent=`${formatSize(state.manifest.size)} (${state.manifest.size.toLocaleString("en-US")} bytes)`;
+        $("file-type").textContent=state.metadata.type||"application/octet-stream";
+        $("file-sha256").textContent=state.metadata.sha256||"Not provided by uploader";
+        const expires=new Date(state.manifest.expiresAt*1000); $("file-expires").dateTime=expires.toISOString(); $("file-expires").textContent=expires.toISOString();
+      }
+      async function renderPreview(parts) {
+        const blob=new Blob(parts,{type:state.metadata.type||"application/octet-stream"}); const kind=classify(state.metadata.type||""); const preview=$("preview"); preview.textContent="";
+        if(kind==="image"&&blob.size<=50*1024*1024){const image=document.createElement("img");image.alt=state.metadata.name;image.src=URL.createObjectURL(blob);preview.appendChild(image);}
+        else if(kind==="text"&&blob.size<=10*1024*1024){preview.appendChild(highlightText(dec.decode(await blob.arrayBuffer())));}
+        else {const p=document.createElement("p");p.textContent="Encrypted binary object. Use Download to decrypt and save it.";preview.appendChild(p);}
+        setDetails(); show("viewer");
+        $("download").onclick=()=>{const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=state.metadata.name||"download.bin";a.click();setTimeout(()=>URL.revokeObjectURL(a.href),30000);};
+      }
+      async function downloadLarge(key) {
+        try {
+          if(window.showSaveFilePicker){
+            const handle=await window.showSaveFilePicker({suggestedName:state.metadata.name||"download.bin"}); const writable=await handle.createWritable();
+            try { for(let i=0;i<state.manifest.chunks;i++){await writable.write(await decryptChunk(i,key));progress((i+1)/state.manifest.chunks);} await writable.close(); }
+            catch(error){await writable.abort();throw error;}
+          } else {
+            const parts=await allChunks(key); const blob=new Blob(parts,{type:state.metadata.type||"application/octet-stream"}); const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=state.metadata.name||"download.bin";a.click();setTimeout(()=>URL.revokeObjectURL(a.href),30000);
+          }
+        } catch(error) { if(error.name!=="AbortError")show("error"); }
+      }
+      function renderDownloadOnly(key) {
+        const preview=$("preview"); preview.textContent=""; const p=document.createElement("p"); p.textContent="Encrypted binary object. Decryption starts only when you choose Download."; preview.appendChild(p);
+        setDetails(); show("viewer"); $("download").onclick=()=>downloadLarge(key);
+      }
+      async function load() {
+        try {
+          if(new URLSearchParams(location.search).get("embed")==="1")document.body.classList.add("embed");
+          const match=location.pathname.match(/^\/d\/([A-Za-z0-9_-]{32})$/); const fragment=location.hash.match(/^#d1\.([A-Za-z0-9_-]{43})$/); if(!match||!fragment)return;
+          show("loading"); state.url=location.href; state.objectId=match[1]; state.secret=from64(fragment[1]); history.replaceState(null,"",location.pathname+location.search);
+          const derivedId=await derive(state.secret,"object-id",24); if(to64(derivedId)!==state.objectId)throw new Error("identifier mismatch");
+          state.manifest=await fetchJson(`/api/v1/objects/${state.objectId}`); if(state.manifest.v!==1||state.manifest.chunkSize!==CHUNK_SIZE)throw new Error("manifest");
+          const metaKey=await aes(await derive(state.secret,"metadata-key",32)); const metaCipher=from64(state.manifest.metadata); const metaLength=metaCipher.length-16;
+          const plain=await decryptRecord(metaKey,metaCipher,iv(2,0),aad(0,state.manifest.profile,derivedId,state.manifest.size,state.manifest.chunks,0xffffffff,metaLength)); state.metadata=JSON.parse(dec.decode(plain));
+          if(state.metadata.v!==1||state.metadata.size!==state.manifest.size||(state.metadata.sha256!==undefined&&!/^[a-f0-9]{64}$/.test(state.metadata.sha256)))throw new Error("metadata"); progress(1/(state.manifest.chunks+1));
+          const contentKey=await aes(await derive(state.secret,"content-key",32)); const kind=classify(state.metadata.type||"");
+          if((kind==="image"&&state.manifest.size<=50*1024*1024)||(kind==="text"&&state.manifest.size<=10*1024*1024)){state.chunks=await allChunks(contentKey);await renderPreview(state.chunks);progress(1);} else {renderDownloadOnly(contentKey);}
+        } catch(e) { show("error"); }
+      }
+      load();
+    })();
+  style.css: |
+    :root {
+      color-scheme: dark;
+      --void:#07030d; --panel:#150a24; --raised:#211034; --violet:#9d5cff;
+      --purple:#6f2cff; --pink:#ff65c8; --cyan:#55e7ff; --acid:#b9ff4f;
+      --text:#f1eaff; --muted:#aa9abd; --line:rgba(157,92,255,.38);
+    }
+    * { box-sizing:border-box; }
+    html,body { min-height:100%; margin:0; }
+    body {
+      color:var(--text); background-color:var(--void);
+      background-image:linear-gradient(rgba(157,92,255,.045) 1px,transparent 1px),linear-gradient(90deg,rgba(157,92,255,.045) 1px,transparent 1px),radial-gradient(circle at 80% 0,rgba(111,44,255,.24),transparent 38%);
+      background-size:32px 32px,32px 32px,auto;
+      font-family:"OpenDyslexic","Atkinson Hyperlegible",system-ui,sans-serif;
+    }
+    main { width:min(1120px,calc(100% - 40px)); margin:0 auto; padding:54px 0 80px; }
+    .label,.status { color:var(--acid); font:700 10px/1.4 ui-monospace,monospace; letter-spacing:.18em; }
+    .login-hero { display:grid; grid-template-columns:minmax(250px,.78fr) minmax(360px,1.35fr); min-height:390px; margin-bottom:28px; overflow:hidden; border-top:1px solid var(--violet); border-bottom:1px solid var(--line); background:linear-gradient(115deg,rgba(22,9,40,.96),rgba(9,3,17,.78)),linear-gradient(90deg,transparent 49.8%,rgba(85,231,255,.12) 50%,transparent 50.2%); box-shadow:20px 20px 0 rgba(72,24,122,.12); }
+    .login-portrait { position:relative; min-height:390px; overflow:hidden; border-right:1px solid var(--line); }
+    .login-portrait::after { position:absolute; inset:0; content:""; pointer-events:none; background:repeating-linear-gradient(0deg,transparent 0 4px,rgba(7,3,13,.16) 5px),linear-gradient(180deg,transparent 55%,rgba(7,3,13,.8)); }
+    .login-portrait img { width:100%; height:100%; min-height:390px; object-fit:cover; object-position:50% 27%; filter:saturate(1.12) contrast(1.04); }
+    .portrait-code { position:absolute; z-index:1; right:14px; bottom:12px; color:var(--acid); font:700 10px/1 ui-monospace,monospace; letter-spacing:.18em; }
+    .login-intro { position:relative; align-self:center; padding:48px clamp(32px,7vw,86px); }
+    .login-intro::before { position:absolute; top:28px; left:0; width:46px; height:3px; content:""; background:var(--pink); box-shadow:19px 8px 0 var(--cyan); }
+    .login-kicker { margin:0 0 20px; color:var(--acid); font:700 11px/1.4 ui-monospace,monospace; letter-spacing:.2em; }
+    .login-intro h1 { margin:0; color:var(--text); font-family:"Arial Black",Impact,sans-serif; font-size:clamp(42px,6.4vw,76px); font-weight:900; line-height:.78; letter-spacing:-.07em; text-transform:uppercase; text-shadow:4px 4px 0 rgba(111,44,255,.65); }
+    .login-intro h1 span { display:block; margin-left:.32em; color:transparent; -webkit-text-stroke:1px var(--pink); text-shadow:none; text-transform:lowercase; }
+    .login-deck { max-width:520px; margin:30px 0 25px; color:#cfc3dd; font-size:15px; line-height:1.75; }
+    .login-status { display:flex; flex-wrap:wrap; gap:8px; }
+    .login-status span { padding:7px 9px 6px; border:1px solid rgba(85,231,255,.35); color:var(--cyan); background:rgba(85,231,255,.04); font:700 9px/1 ui-monospace,monospace; letter-spacing:.12em; }
+    .terminal { margin:28px clamp(20px,7vw,82px) 52px; border:1px solid rgba(157,92,255,.5); background:rgba(5,2,10,.94); box-shadow:12px 12px 0 rgba(111,44,255,.12); font:700 clamp(12px,1.8vw,16px)/1.75 ui-monospace,monospace; }
+    .terminal-bar { display:flex; align-items:center; gap:8px; padding:10px 14px; border-bottom:1px solid var(--line); color:var(--muted); font-size:10px; letter-spacing:.08em; }
+    .terminal-bar span { width:8px; height:8px; border-radius:50%; background:var(--pink); }
+    .terminal-bar span:nth-child(2) { background:var(--violet); }
+    .terminal-bar span:nth-child(3) { background:var(--acid); }
+    .terminal-bar b { margin-left:6px; font-weight:700; }
+    .terminal-body { padding:clamp(20px,4vw,34px); }
+    .terminal-body p { margin:0 0 8px; color:#c8c2cf; }
+    .terminal-title { margin:20px 0 8px!important; color:var(--text)!important; font-size:clamp(20px,3vw,32px); text-transform:uppercase; }
+    .terminal .prompt { color:var(--violet); }
+    .terminal dl { margin:24px 0 0; }
+    .terminal dt { color:var(--muted); }
+    .terminal dd { color:var(--cyan); }
+    .input-line { margin-top:18px!important; }
+    .cursor { color:var(--acid); animation:blink 1s steps(1,end) infinite; }
+    .sr-only { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0,0,0,0); }
+    .panel { margin-top:24px; padding:clamp(24px,5vw,48px); border-top:1px solid var(--pink); border-bottom:1px solid var(--line); background:linear-gradient(120deg,rgba(34,14,57,.97),rgba(10,4,18,.97)); box-shadow:16px 16px rgba(111,44,255,.1); }
+    .panel h1 { margin:.2em 0 .6em; font-size:clamp(26px,5vw,48px); }
+    dl { margin:28px 0 0; border-top:1px solid var(--line); }
+    dl div { display:grid; grid-template-columns:140px 1fr; gap:20px; padding:12px 0; border-bottom:1px solid rgba(157,92,255,.16); }
+    dt { color:var(--muted); font:700 9px/1.5 ui-monospace,monospace; letter-spacing:.14em; }
+    dd { margin:0; color:var(--cyan); font:700 11px/1.5 ui-monospace,monospace; }
+    .hidden { display:none!important; }
+    .meter { height:6px; margin-top:22px; background:#090310; }
+    .meter span { display:block; width:0; height:100%; background:linear-gradient(90deg,var(--pink),var(--violet),var(--cyan)); transition:width .2s; }
+    .file-heading { display:flex; align-items:end; justify-content:space-between; gap:24px; }
+    button { padding:12px 18px; border:0; color:#09020f; background:linear-gradient(90deg,var(--pink),var(--violet)); box-shadow:5px 5px rgba(85,231,255,.14); font-weight:800; text-transform:uppercase; cursor:pointer; }
+    button:hover { background:linear-gradient(90deg,var(--acid),var(--cyan)); }
+    .file-details { margin-top:20px; }
+    .file-details dd { overflow-wrap:anywhere; }
+    .file-details code { color:var(--acid); font:inherit; letter-spacing:.025em; }
+    .preview { margin-top:28px; }
+    .preview img { display:block; max-width:100%; max-height:72vh; margin:auto; object-fit:contain; }
+    .text-preview { overflow:auto; max-height:68vh; padding:22px; border:1px solid var(--line); color:#d9cee7; background:#08020e; font:13px/1.65 ui-monospace,monospace; white-space:pre-wrap; word-break:break-word; }
+    .text-preview .heading { color:var(--pink); font-weight:800; }
+    .text-preview .quote { color:var(--cyan); }
+    .text-preview .list { color:var(--acid); }
+    .text-preview .code { color:#c69cff; }
+    .error { border-top-color:#ff487f; }
+    .error .status { color:#ff78b4; }
+    body.embed main { width:100%; padding:0; }
+    body.embed .login-hero,body.embed #idle { display:none; }
+    body.embed .panel { margin:0; box-shadow:none; border:0; }
+    @keyframes blink { 50% { opacity:0; } }
+    @media(max-width:760px){main{width:min(100% - 24px,560px);padding-top:28px}.login-hero{grid-template-columns:1fr;box-shadow:10px 10px 0 rgba(72,24,122,.12)}.login-portrait,.login-portrait img{min-height:300px;max-height:380px}.login-portrait{border-right:0;border-bottom:1px solid var(--line)}.login-intro{padding:42px 24px 36px}.login-intro h1{font-size:clamp(40px,13vw,68px)}.terminal{margin-left:14px;margin-right:14px}.terminal-body{overflow-wrap:anywhere}.file-heading{display:block}.file-heading button{margin-top:12px}dl div{grid-template-columns:100px 1fr}.panel{box-shadow:8px 8px rgba(111,44,255,.1)}}
+    @media(prefers-reduced-motion:reduce){.cursor{animation:none}}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: neoguard-config
+  namespace: irc
+data:
+  neoguardd.py: |
+    #!/usr/bin/python3
+    import hashlib
+    import hmac
+    import html
+    import ipaddress
+    import json
+    import os
+    import re
+    import secrets
+    import shlex
+    import socket
+    import sqlite3
+    import threading
+    import time
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from pathlib import Path
+    from urllib.parse import parse_qs, urlsplit
+    
+    DATA_ROOT = Path("/data")
+    DB_PATH = DATA_ROOT / "neoguard.sqlite3"
+    KEY_PATH = Path("/etc/neoguard/key")
+    LISTEN_ADDRESS = "0.0.0.0"
+    LISTEN_PORT = 8081
+    TRUSTED_PROXY = ipaddress.ip_address("192.168.11.53")
+    EXEMPT_NETWORKS = (
+        ipaddress.ip_network("10.42.0.0/16"),
+        ipaddress.ip_network("192.168.11.0/24"),
+        ipaddress.ip_network("100.64.0.0/10"),
+    )
+    WINDOW = 600
+    MAX_FAILURES = 21
+    BAN_SECONDS = 24 * 60 * 60
+    DEFAULT_REDIRECT = "https://auth.example.com"
+    DB_LOCK = threading.RLock()
+    NONCES = {}
+    URL_RE = re.compile(r"^https://[^\s\\\"'{};$]{1,2039}$")
+    
+    
+    def now():
+        return int(time.time())
+    
+    
+    def database():
+        conn = sqlite3.connect(DB_PATH, timeout=30)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=FULL")
+        return conn
+    
+    
+    def initialize_database():
+        DATA_ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with database() as conn:
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS attempts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    occurred_at INTEGER NOT NULL,
+                    address TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    detail TEXT NOT NULL,
+                    destination_port INTEGER
+                );
+                CREATE INDEX IF NOT EXISTS attempts_window ON attempts(address, occurred_at);
+                CREATE TABLE IF NOT EXISTS offenses (
+                    address TEXT PRIMARY KEY,
+                    count INTEGER NOT NULL,
+                    last_at INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS bans (
+                    address TEXT PRIMARY KEY,
+                    started_at INTEGER NOT NULL,
+                    expires_at INTEGER,
+                    offense INTEGER NOT NULL,
+                    action TEXT NOT NULL,
+                    target TEXT NOT NULL,
+                    message TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    rdns TEXT NOT NULL DEFAULT '',
+                    active INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    occurred_at INTEGER NOT NULL,
+                    level TEXT NOT NULL,
+                    message TEXT NOT NULL,
+                    destination_port INTEGER
+                );
+                """
+            )
+            for table in ("attempts", "events"):
+                columns = {row["name"] for row in conn.execute("PRAGMA table_info(%s)" % table)}
+                if "destination_port" not in columns:
+                    conn.execute("ALTER TABLE %s ADD COLUMN destination_port INTEGER" % table)
+    
+    
+    def normalize_address(value):
+        address = ipaddress.ip_address(value)
+        if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+            address = address.ipv4_mapped
+        return address
+    
+    
+    def exempt(address):
+        return any(address in network for network in EXEMPT_NETWORKS)
+    
+    
+    def add_event(conn, level, message, destination_port=None):
+        conn.execute("INSERT INTO events(occurred_at, level, message, destination_port) VALUES (?, ?, ?, ?)",
+                     (now(), level, message[:2000], destination_port))
+    
+    
+    def confirmed_rdns(address):
+        try:
+            hostname = socket.gethostbyaddr(str(address))[0].lower().rstrip(".")
+            if not hostname or len(hostname) > 253 or any(ord(c) < 33 for c in hostname):
+                return ""
+            results = socket.getaddrinfo(hostname, None)
+            returned = {normalize_address(item[4][0]) for item in results}
+            return hostname if address in returned else ""
+        except (OSError, ValueError):
+            return ""
+    
+    
+    def resolve_ban(address_text):
+        address = normalize_address(address_text)
+        hostname = confirmed_rdns(address)
+        with DB_LOCK, database() as conn:
+            conn.execute("UPDATE bans SET rdns = ? WHERE address = ?", (hostname, str(address)))
+            if hostname:
+                add_event(conn, "INFO", "[RDNS] ip=%s rdns=%s" % (address, hostname))
+    
+    
+    def expire_bans(conn):
+        timestamp = now()
+        rows = list(conn.execute("SELECT address FROM bans WHERE active = 1 AND expires_at IS NOT NULL AND expires_at <= ?", (timestamp,)))
+        for row in rows:
+            conn.execute("UPDATE bans SET active = 0 WHERE address = ?", (row["address"],))
+            add_event(conn, "INFO", "[UNBAN] ip=%s reason=expired" % row["address"])
+    
+    
+    def normalize_destination_port(value):
+        if value is None or value == "":
+            return None
+        if isinstance(value, bool):
+            raise ValueError("invalid destination port")
+        if isinstance(value, int):
+            port = value
+        elif isinstance(value, str) and value.isdecimal():
+            port = int(value)
+        else:
+            raise ValueError("invalid destination port")
+        if not 1 <= port <= 65535:
+            raise ValueError("invalid destination port")
+        return port
+    
+    
+    def record_attempt(address_value, source, detail, destination_port=None):
+        destination_port = normalize_destination_port(destination_port)
+        try:
+            address = normalize_address(address_value)
+        except ValueError:
+            return
+        if exempt(address):
+            return
+        address_text = str(address)
+        timestamp = now()
+        created_ban = False
+        with DB_LOCK, database() as conn:
+            expire_bans(conn)
+            active = conn.execute("SELECT 1 FROM bans WHERE address = ? AND active = 1", (address_text,)).fetchone()
+            conn.execute("DELETE FROM attempts WHERE occurred_at < ?", (timestamp - WINDOW,))
+            if active:
+                return
+            conn.execute("INSERT INTO attempts(occurred_at,address,source,detail,destination_port) VALUES (?,?,?,?,?)",
+                         (timestamp, address_text, source[:32], detail[:300], destination_port))
+            count = conn.execute("SELECT COUNT(*) AS n FROM attempts WHERE address = ? AND occurred_at >= ?",
+                                 (address_text, timestamp - WINDOW)).fetchone()["n"]
+            if count in (1, 10, 20):
+                port_text = " port=%d" % destination_port if destination_port else ""
+                add_event(conn, "WARN", "[WARN] ip=%s%s rdns=pending count=%d/%d window=10m source=%s" %
+                           (address_text, port_text, count, MAX_FAILURES, source[:32]), destination_port)
+            if count >= MAX_FAILURES:
+                offense_row = conn.execute("SELECT count FROM offenses WHERE address = ?", (address_text,)).fetchone()
+                offense = (offense_row["count"] if offense_row else 0) + 1
+                conn.execute("INSERT INTO offenses VALUES (?,?,?) ON CONFLICT(address) DO UPDATE SET count=excluded.count,last_at=excluded.last_at",
+                             (address_text, offense, timestamp))
+                expires = None if offense >= 3 else timestamp + BAN_SECONDS
+                conn.execute("""
+                    INSERT INTO bans(address,started_at,expires_at,offense,action,target,message,reason,rdns,active)
+                    VALUES (?,?,?,?,?,?,?,?,?,1)
+                    ON CONFLICT(address) DO UPDATE SET started_at=excluded.started_at,expires_at=excluded.expires_at,
+                      offense=excluded.offense,action=excluded.action,target=excluded.target,message=excluded.message,
+                      reason=excluded.reason,rdns='',active=1
+                """, (address_text, timestamp, expires, offense, "redirect", DEFAULT_REDIRECT,
+                        "Access denied by NeoGuard.", "automatic threshold", ""))
+                conn.execute("DELETE FROM attempts WHERE address = ?", (address_text,))
+                level = "PERM" if expires is None else "BAN"
+                until = "permanent" if expires is None else time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(expires))
+                port_text = " port=%d" % destination_port if destination_port else ""
+                add_event(conn, level, "[%s] ip=%s%s rdns=pending offense=%d failures=%d until=%s action=redirect" %
+                           (level, address_text, port_text, offense, count, until), destination_port)
+                created_ban = True
+        if created_ban:
+            threading.Thread(target=resolve_ban, args=(address_text,), daemon=True).start()
+    
+    
+    def active_ban(address_value):
+        try:
+            address = normalize_address(address_value)
+        except ValueError:
+            return None
+        if exempt(address):
+            return None
+        with DB_LOCK, database() as conn:
+            expire_bans(conn)
+            return conn.execute("SELECT * FROM bans WHERE address = ? AND active = 1", (str(address),)).fetchone()
+    
+    
+    def duration_value(value):
+        if value == "permanent":
+            return None
+        match = re.fullmatch(r"(\d+)(m|h|d)", value)
+        if not match:
+            raise ValueError("duration must be Nm, Nh, Nd, or permanent")
+        factor = {"m": 60, "h": 3600, "d": 86400}[match.group(2)]
+        duration = int(match.group(1)) * factor
+        if duration < 60 or duration > 10 * 365 * 86400:
+            raise ValueError("duration out of range")
+        return now() + duration
+    
+    
+    def format_ban(row):
+        until = "permanent" if row["expires_at"] is None else time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(row["expires_at"]))
+        return "ip=%s rdns=%s offense=%d until=%s action=%s target=%s reason=%s" % (
+            row["address"], row["rdns"] or "-", row["offense"], until, row["action"],
+            row["target"] if row["action"] == "redirect" else "-", row["reason"])
+    
+    
+    def run_command(command):
+        try:
+            args = shlex.split(command)
+        except ValueError as error:
+            return "ERROR " + str(error)
+        if not args:
+            return "Commands: list, show IP, add IP DURATION, remove IP, extend IP DURATION, action IP redirect URL|message TEXT, status"
+        operation = args[0].lower()
+        with DB_LOCK, database() as conn:
+            expire_bans(conn)
+            if operation == "list":
+                rows = list(conn.execute("SELECT * FROM bans WHERE active=1 ORDER BY started_at DESC LIMIT 25"))
+                return "No active bans." if not rows else "\n".join(format_ban(row) for row in rows)
+            if operation == "status":
+                active = conn.execute("SELECT COUNT(*) n FROM bans WHERE active=1").fetchone()["n"]
+                attempts = conn.execute("SELECT COUNT(*) n FROM attempts WHERE occurred_at>=?", (now()-WINDOW,)).fetchone()["n"]
+                return "NeoGuard active_bans=%d recent_attempts=%d threshold=%d/10m" % (active, attempts, MAX_FAILURES)
+            if len(args) < 2:
+                return "ERROR missing IP address"
+            try:
+                address = normalize_address(args[1])
+            except ValueError:
+                return "ERROR invalid IP address"
+            if exempt(address):
+                return "ERROR protected internal/trusted address"
+            address_text = str(address)
+            if operation == "show":
+                row = conn.execute("SELECT * FROM bans WHERE address=?", (address_text,)).fetchone()
+                offense = conn.execute("SELECT count FROM offenses WHERE address=?", (address_text,)).fetchone()
+                return (format_ban(row) if row else "No ban for %s" % address_text) + " offenses=%d" % (offense["count"] if offense else 0)
+            if operation == "remove":
+                conn.execute("UPDATE bans SET active=0 WHERE address=?", (address_text,))
+                conn.execute("DELETE FROM attempts WHERE address=?", (address_text,))
+                add_event(conn, "ADMIN", "[ADMIN] operation=remove ip=%s" % address_text)
+                return "Removed active ban for %s; offense history preserved." % address_text
+            if operation == "add":
+                expiry = duration_value(args[2] if len(args) > 2 else "24h")
+                offense_row = conn.execute("SELECT count FROM offenses WHERE address=?", (address_text,)).fetchone()
+                offense = offense_row["count"] if offense_row else 0
+                conn.execute("""
+                    INSERT INTO bans VALUES (?,?,?,?,?,?,?,?,?,1)
+                    ON CONFLICT(address) DO UPDATE SET started_at=excluded.started_at,expires_at=excluded.expires_at,
+                      action=excluded.action,target=excluded.target,message=excluded.message,reason=excluded.reason,active=1
+                """, (address_text, now(), expiry, offense, "redirect", DEFAULT_REDIRECT,
+                        "Access denied by NeoGuard.", "manual", confirmed_rdns(address)))
+                add_event(conn, "ADMIN", "[ADMIN] operation=add ip=%s" % address_text)
+                return "Added " + address_text
+            row = conn.execute("SELECT * FROM bans WHERE address=? AND active=1", (address_text,)).fetchone()
+            if not row:
+                return "ERROR no active ban for %s" % address_text
+            if operation == "extend":
+                if len(args) < 3:
+                    return "ERROR missing duration"
+                expiry = duration_value(args[2])
+                conn.execute("UPDATE bans SET expires_at=? WHERE address=?", (expiry, address_text))
+                add_event(conn, "ADMIN", "[ADMIN] operation=extend ip=%s duration=%s" % (address_text, args[2]))
+                return "Extended " + address_text
+            if operation == "action":
+                if len(args) < 4 or args[2] not in ("redirect", "message"):
+                    return "ERROR usage: action IP redirect URL | action IP message TEXT"
+                action = args[2]
+                value = " ".join(args[3:])[:1000]
+                if action == "redirect" and not URL_RE.fullmatch(value):
+                    return "ERROR redirect must be a safe https:// URL"
+                if action == "message" and any(ord(c) < 32 and c not in "\t" for c in value):
+                    return "ERROR invalid message"
+                conn.execute("UPDATE bans SET action=?,target=?,message=? WHERE address=?",
+                             (action, value if action == "redirect" else "", value if action == "message" else "", address_text))
+                add_event(conn, "ADMIN", "[ADMIN] operation=action ip=%s action=%s" % (address_text, action))
+                return "Updated action for " + address_text
+        return "ERROR unknown command"
+    
+    
+    def verify_hmac(handler, body):
+        try:
+            timestamp = int(handler.headers.get("X-Neo-Timestamp", "0"))
+            nonce = handler.headers.get("X-Neo-Nonce", "")
+            signature = handler.headers.get("X-Neo-Signature", "")
+            if abs(now() - timestamp) > 60 or not re.fullmatch(r"[0-9a-f]{32}", nonce):
+                return False
+            with DB_LOCK:
+                cutoff = now() - 120
+                for key in list(NONCES):
+                    if NONCES[key] < cutoff:
+                        del NONCES[key]
+                if nonce in NONCES:
+                    return False
+                path = handler.path
+                digest = hashlib.sha256(body).hexdigest()
+                canonical = "%d\n%s\n%s\n%s\n%s" % (timestamp, nonce, handler.command, path, digest)
+                expected = hmac.new(KEY_PATH.read_bytes(), canonical.encode(), hashlib.sha256).hexdigest()
+                if not hmac.compare_digest(signature, expected):
+                    return False
+                NONCES[nonce] = now()
+                return True
+        except (ValueError, OSError):
+            return False
+    
+    
+    class NeoGuardHandler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+        server_version = "NeoGuard"
+        sys_version = ""
+    
+        def log_message(self, fmt, *args):
+            pass
+    
+        def peer(self):
+            return normalize_address(self.client_address[0])
+    
+        def body(self, maximum=16384):
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                return None
+            return self.rfile.read(length) if 0 <= length <= maximum else None
+    
+        def response(self, status, body=b"", content_type="application/json", headers=None):
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            if headers:
+                for key, value in headers.items():
+                    self.send_header(key, value)
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(body)
+    
+        def json_response(self, status, value):
+            self.response(status, json.dumps(value, separators=(",", ":")).encode() + b"\n")
+    
+        def proxy_client(self):
+            if self.peer() != TRUSTED_PROXY:
+                return None
+            try:
+                return normalize_address(self.headers.get("X-Real-IP", ""))
+            except ValueError:
+                return None
+    
+        def do_HEAD(self):
+            return self.do_GET()
+    
+        def do_GET(self):
+            path = urlsplit(self.path).path
+            if path == "/check":
+                client = self.proxy_client()
+                if not client:
+                    return self.response(403)
+                return self.response(403 if active_ban(client) else 204)
+            if path == "/blocked":
+                client = self.proxy_client()
+                row = active_ban(client) if client else None
+                if not row:
+                    return self.response(404)
+                if row["action"] == "redirect":
+                    return self.response(302, headers={"Location": row["target"]})
+                message = html.escape(row["message"] or "Access denied by NeoGuard.")
+                page = ("<!doctype html><meta charset=utf-8><meta name=robots content=noindex>"
+                        "<title>NeoGuard</title><style>body{margin:0;background:#07030d;color:#f1eaff;font:18px monospace}"
+                        "main{max-width:760px;margin:12vh auto;padding:48px;border:1px solid #9d5cff;background:#150a24;"
+                        "box-shadow:14px 14px #351360}h1{color:#ff65c8}b{color:#b9ff4f}</style>"
+                        "<main><b>NEOGUARD // ACCESS DENIED</b><h1>Connection blocked</h1><p>%s</p></main>" % message).encode()
+                return self.response(403, page, "text/html; charset=utf-8")
+            if path == "/api/v1/neoguard/poll":
+                if not verify_hmac(self, b""):
+                    return self.response(403)
+                try:
+                    after = int(parse_qs(urlsplit(self.path).query).get("after", ["0"])[0])
+                except ValueError:
+                    after = 0
+                with database() as conn:
+                    rows = list(conn.execute("SELECT * FROM events WHERE id>? ORDER BY id LIMIT 100", (after,)))
+                return self.json_response(200, {"events": [dict(row) for row in rows]})
+            return self.response(404)
+    
+        def do_POST(self):
+            path = urlsplit(self.path).path
+            body = self.body()
+            if body is None:
+                return self.response(400)
+            if path == "/internal/attempt" and self.peer().is_loopback:
+                try:
+                    data = json.loads(body)
+                    record_attempt(data["ip"], data.get("source", "drops"), data.get("detail", "invalid request"),
+                                   data.get("destination_port"))
+                    return self.response(204)
+                except (ValueError, KeyError, json.JSONDecodeError):
+                    return self.response(400)
+            if path == "/api/v1/neoguard/event":
+                if not verify_hmac(self, body):
+                    return self.response(403)
+                try:
+                    data = json.loads(body)
+                    if data.get("type") == "attempt":
+                        record_attempt(data["ip"], data.get("source", "relay"), data.get("detail", "authentication failed"),
+                                       data.get("destination_port"))
+                        return self.json_response(200, {"ok": True})
+                    if data.get("type") == "command":
+                        return self.json_response(200, {"response": run_command(data.get("command", ""))})
+                except (ValueError, KeyError, json.JSONDecodeError):
+                    pass
+                return self.response(400)
+            return self.response(404)
+    
+    
+    class NeoGuardServer(ThreadingHTTPServer):
+        daemon_threads = True
+        request_queue_size = 256
+    
+    
+    if __name__ == "__main__":
+        os.umask(0o077)
+        initialize_database()
+        NeoGuardServer((LISTEN_ADDRESS, LISTEN_PORT), NeoGuardHandler).serve_forever()
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: neobear
+  namespace: irc
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: neobear
+  template:
+    metadata:
+      labels:
+        app: neobear
+    spec:
+      containers:
+      - name: web
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: html-volume
+          mountPath: /usr/share/nginx/html
+      volumes:
+      - name: html-volume
+        persistentVolumeClaim:
+          claimName: neobear-nfs-pvc
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: neodrop
+  namespace: irc
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: neodrop
+  template:
+    metadata:
+      labels:
+        app: neodrop
+    spec:
+      containers:
+      - name: server
+        image: python:3.11-alpine
+        command: ["python3", "/usr/share/neodrop/neodrop_server.py"]
+        ports:
+        - containerPort: 8080
+        volumeMounts:
+        - name: config-volume
+          mountPath: /usr/share/neodrop
+        - name: data-volume
+          mountPath: /data
+        - name: secret-volume
+          mountPath: /etc/neodrop
+      volumes:
+      - name: config-volume
+        configMap:
+          name: neodrop-config
+      - name: data-volume
+        persistentVolumeClaim:
+          claimName: neodrop-data-pvc
+      - name: secret-volume
+        secret:
+          secretName: neorelay-secrets
+          items:
+          - key: token_hash
+            path: token_hash
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: neoguard
+  namespace: irc
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: neoguard
+  template:
+    metadata:
+      labels:
+        app: neoguard
+    spec:
+      containers:
+      - name: daemon
+        image: python:3.11-alpine
+        command: ["python3", "/usr/share/neoguard/neoguardd.py"]
+        ports:
+        - containerPort: 8081
+        volumeMounts:
+        - name: config-volume
+          mountPath: /usr/share/neoguard
+        - name: data-volume
+          mountPath: /data
+        - name: secret-volume
+          mountPath: /etc/neoguard
+      volumes:
+      - name: config-volume
+        configMap:
+          name: neoguard-config
+      - name: data-volume
+        persistentVolumeClaim:
+          claimName: neoguard-data-pvc
+      - name: secret-volume
+        secret:
+          secretName: neorelay-secrets
+          items:
+          - key: neoguard_key
+            path: key
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: neobear-service
+  namespace: irc
+spec:
+  type: NodePort
+  ports:
+  - port: 80
+    targetPort: 80
+    nodePort: 30080
+    protocol: TCP
+  selector:
+    app: neobear
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: neodrop-service
+  namespace: irc
+spec:
+  type: NodePort
+  ports:
+  - port: 8080
+    targetPort: 8080
+    nodePort: 30081
+    protocol: TCP
+  selector:
+    app: neodrop
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: neoguard-service
+  namespace: irc
+spec:
+  type: NodePort
+  ports:
+  - port: 8081
+    targetPort: 8081
+    nodePort: 30082
+    protocol: TCP
+  selector:
+    app: neoguard
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: weechat-data-pvc
+  namespace: irc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: weechat
+  namespace: irc
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: weechat
+  template:
+    metadata:
+      labels:
+        app: weechat
+    spec:
+      containers:
+      - name: client
+        image: weechat/weechat:latest
+        ports:
+        - containerPort: 9001
+        tty: true
+        stdin: true
+        volumeMounts:
+        - name: data-volume
+          mountPath: /home/user/.weechat
+      volumes:
+      - name: data-volume
+        persistentVolumeClaim:
+          claimName: weechat-data-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: weechat-service
+  namespace: irc
+spec:
+  type: NodePort
+  ports:
+  - port: 9001
+    targetPort: 9001
+    nodePort: 30091
+    protocol: TCP
+  selector:
+    app: weechat

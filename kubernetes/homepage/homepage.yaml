@@ -1,0 +1,201 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: homepage
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: homepage-config
+  namespace: homepage
+data:
+  settings.yaml: |
+    title: Personal Production SSO
+    background: /images/background.jpg
+    theme: dark
+    layout:
+      Management:
+        style: grid
+        columns: 4
+      Communication & Sharing:
+        style: grid
+        columns: 4
+      Media Stack:
+        style: grid
+        columns: 4
+  bookmarks.yaml: |
+    - Infrastructure:
+        - Proxmox VE:
+            - icon: proxmox
+              abbr: PVE
+              href: https://proxmox.example.com
+        - Tailscale:
+            - icon: tailscale
+              abbr: TS
+              href: https://login.tailscale.com
+    - Communication:
+        - Ergo IRC:
+            - icon: chat
+              abbr: IRC
+              href: ircs://irc.example.com:6697
+        - NeoBear Web IRC:
+            - icon: weechat
+              abbr: WEB
+              href: https://chat.example.com
+        - NeoDrop Files:
+            - icon: nextcloud
+              abbr: DROP
+              href: https://drops.example.com
+  services.yaml: |
+    - Management:
+        - ArgoCD GitOps:
+            icon: argocd
+            href: https://argocd.example.com
+            description: GitOps Controller
+        - Authelia SSO:
+            icon: authelia
+            href: https://auth.example.com
+            description: SSO & MFA Gateway
+        - Gitea Git Server:
+            icon: gitea
+            href: https://gitea.example.com
+            description: Git Code Repositories
+        - Gotify Alerts:
+            icon: gotify
+            href: https://gotify.example.com
+            description: Unified Push Alerts
+        - Grafana:
+            icon: grafana
+            href: https://grafana.example.com
+            description: Metrics & Logs
+        - Prometheus:
+            icon: prometheus
+            href: https://prometheus.example.com
+            description: Scraper Engine
+        - Uptime Kuma:
+            icon: uptime-kuma
+            href: https://status.example.com
+            description: Status & Latency
+        - Wazuh SIEM:
+            icon: wazuh
+            href: https://wazuh.example.com
+            description: Security Operations
+
+    - Communication & Sharing:
+        - NeoBear Web IRC:
+            icon: weechat
+            href: https://chat.example.com
+            description: Private IRC Gateway
+        - NeoDrop File Drop:
+            icon: nextcloud
+            href: https://drops.example.com
+            description: Encrypted File Sharing
+
+    - Media Stack:
+        - Plex Server:
+            icon: plex
+            href: https://plex.example.com
+            description: Media Streaming
+        - Overseerr:
+            icon: overseerr
+            href: https://overseerr.example.com
+            description: Media Requests
+        - Requestrr:
+            icon: discord
+            href: https://requestrr.example.com
+            description: Discord Request Bot
+        - SABnzbd:
+            icon: sabnzbd
+            href: https://sabnzbd.example.com
+            description: Usenet Downloader
+        - Sonarr:
+            icon: sonarr
+            href: https://sonarr.example.com
+            description: TV Shows Manager
+        - Radarr:
+            icon: radarr
+            href: https://radarr.example.com
+            description: Movies Manager
+        - Prowlarr:
+            icon: prowlarr
+            href: https://prowlarr.example.com
+            description: Indexer Sync
+  widgets.yaml: |
+    - logo:
+        icon: https://raw.githubusercontent.com/gethomepage/homepage/main/public/android-chrome-192x192.png
+    - datetime:
+        text_size: xl
+        format:
+          dateStyle: long
+          timeStyle: short
+          hour12: false
+    - resources:
+        cpu: true
+        memory: true
+        disk: /
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: homepage
+  namespace: homepage
+  labels:
+    app: homepage
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: homepage
+  template:
+    metadata:
+      labels:
+        app: homepage
+    spec:
+      containers:
+      - name: homepage
+        image: ghcr.io/gethomepage/homepage:latest
+        ports:
+        - containerPort: 3000
+          name: http
+        env:
+        - name: HOMEPAGE_ALLOWED_HOSTS
+          value: "homepage.example.com,192.168.11.90,192.168.11.91,192.168.11.92"
+        volumeMounts:
+        - name: config-volume
+          mountPath: /app/config/settings.yaml
+          subPath: settings.yaml
+        - name: config-volume
+          mountPath: /app/config/bookmarks.yaml
+          subPath: bookmarks.yaml
+        - name: config-volume
+          mountPath: /app/config/services.yaml
+          subPath: services.yaml
+        - name: config-volume
+          mountPath: /app/config/widgets.yaml
+          subPath: widgets.yaml
+        resources:
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+      volumes:
+      - name: config-volume
+        configMap:
+          name: homepage-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: homepage-service
+  namespace: homepage
+spec:
+  type: LoadBalancer
+  ports:
+  - port: 3000
+    targetPort: 3000
+    protocol: TCP
+    name: http
+  selector:
+    app: homepage

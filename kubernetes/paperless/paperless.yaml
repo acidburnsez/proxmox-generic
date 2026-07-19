@@ -1,0 +1,129 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: paperless-data-pvc
+  namespace: media
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: paperless-media-pvc
+  namespace: media
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: paperless-consume-pvc
+  namespace: media
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: paperless
+  namespace: media
+  labels:
+    app: paperless
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: paperless
+  template:
+    metadata:
+      labels:
+        app: paperless
+    spec:
+      containers:
+      - name: paperless
+        image: ghcr.io/paperless-ngx/paperless-ngx:latest
+        ports:
+        - containerPort: 8000
+          name: http
+        env:
+        - name: PAPERLESS_REDIS
+          value: "redis://localhost:6379"
+        - name: PAPERLESS_DBENGINE
+          value: "sqlite"
+        - name: PAPERLESS_TIME_ZONE
+          value: "Europe/London"
+        - name: USERMAP_UID
+          value: "1000"
+        - name: USERMAP_GID
+          value: "1000"
+        - name: PAPERLESS_URL
+          value: "https://paperless.example.com"
+        - name: PAPERLESS_ENABLE_HTTP_REMOTE_USER
+          value: "true"
+        - name: PAPERLESS_HTTP_REMOTE_USER_HEADER
+          value: "HTTP_REMOTE_USER"
+        - name: PAPERLESS_OCR_LANGUAGE
+          value: "eng"
+        volumeMounts:
+        - name: data-volume
+          mountPath: /usr/src/paperless/data
+        - name: media-volume
+          mountPath: /usr/src/paperless/media
+        - name: consume-volume
+          mountPath: /usr/src/paperless/consume
+        resources:
+          limits:
+            cpu: "1500m"
+            memory: "1536Mi"
+          requests:
+            cpu: "200m"
+            memory: "512Mi"
+      - name: redis
+        image: redis:7-alpine
+        ports:
+        - containerPort: 6379
+          name: redis
+        resources:
+          limits:
+            cpu: "500m"
+            memory: "256Mi"
+          requests:
+            cpu: "50m"
+            memory: "64Mi"
+      volumes:
+      - name: data-volume
+        persistentVolumeClaim:
+          claimName: paperless-data-pvc
+      - name: media-volume
+        persistentVolumeClaim:
+          claimName: paperless-media-pvc
+      - name: consume-volume
+        persistentVolumeClaim:
+          claimName: paperless-consume-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: paperless-service
+  namespace: media
+spec:
+  type: LoadBalancer
+  ports:
+  - port: 8000
+    targetPort: 8000
+    protocol: TCP
+    name: http
+  selector:
+    app: paperless

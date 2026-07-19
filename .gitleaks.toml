@@ -1,0 +1,5 @@
+[allowlist]
+description = "Allowlist for homelab setup files containing dummy/installation tokens"
+paths = [
+    '''terraform/scripts/install-gitea.sh'''
+]

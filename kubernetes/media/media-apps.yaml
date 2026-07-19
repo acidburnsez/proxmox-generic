@@ -1,0 +1,297 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: sonarr-config-pvc
+  namespace: media
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sonarr
+  namespace: media
+  labels:
+    app: sonarr
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sonarr
+  template:
+    metadata:
+      labels:
+        app: sonarr
+    spec:
+      containers:
+      - name: sonarr
+        image: lscr.io/linuxserver/sonarr:latest
+        ports:
+        - containerPort: 8989
+          name: http
+        env:
+        - name: PUID
+          value: "0"
+        - name: PGID
+          value: "0"
+        - name: TZ
+          value: "Europe/London"
+        volumeMounts:
+        - name: config-volume
+          mountPath: /config
+        - name: media-volume
+          mountPath: /media
+        resources:
+          limits:
+            cpu: "1000m"
+            memory: "1024Mi"
+          requests:
+            cpu: "100m"
+            memory: "256Mi"
+      volumes:
+      - name: config-volume
+        persistentVolumeClaim:
+          claimName: sonarr-config-pvc
+      - name: media-volume
+        persistentVolumeClaim:
+          claimName: media-nfs-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sonarr-service
+  namespace: media
+spec:
+  type: LoadBalancer
+  ports:
+  - port: 8989
+    targetPort: 8989
+    protocol: TCP
+    name: http
+  selector:
+    app: sonarr
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: radarr-config-pvc
+  namespace: media
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: radarr
+  namespace: media
+  labels:
+    app: radarr
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: radarr
+  template:
+    metadata:
+      labels:
+        app: radarr
+    spec:
+      containers:
+      - name: radarr
+        image: lscr.io/linuxserver/radarr:latest
+        ports:
+        - containerPort: 7878
+          name: http
+        env:
+        - name: PUID
+          value: "0"
+        - name: PGID
+          value: "0"
+        - name: TZ
+          value: "Europe/London"
+        volumeMounts:
+        - name: config-volume
+          mountPath: /config
+        - name: media-volume
+          mountPath: /media
+        resources:
+          limits:
+            cpu: "1000m"
+            memory: "1024Mi"
+          requests:
+            cpu: "100m"
+            memory: "256Mi"
+      volumes:
+      - name: config-volume
+        persistentVolumeClaim:
+          claimName: radarr-config-pvc
+      - name: media-volume
+        persistentVolumeClaim:
+          claimName: media-nfs-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: radarr-service
+  namespace: media
+spec:
+  type: LoadBalancer
+  ports:
+  - port: 7878
+    targetPort: 7878
+    protocol: TCP
+    name: http
+  selector:
+    app: radarr
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: prowlarr-config-pvc
+  namespace: media
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prowlarr
+  namespace: media
+  labels:
+    app: prowlarr
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prowlarr
+  template:
+    metadata:
+      labels:
+        app: prowlarr
+    spec:
+      containers:
+      - name: prowlarr
+        image: lscr.io/linuxserver/prowlarr:latest
+        ports:
+        - containerPort: 9696
+          name: http
+        env:
+        - name: PUID
+          value: "0"
+        - name: PGID
+          value: "0"
+        - name: TZ
+          value: "Europe/London"
+        volumeMounts:
+        - name: config-volume
+          mountPath: /config
+        resources:
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+          requests:
+            cpu: "50m"
+            memory: "128Mi"
+      volumes:
+      - name: config-volume
+        persistentVolumeClaim:
+          claimName: prowlarr-config-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prowlarr-service
+  namespace: media
+spec:
+  type: LoadBalancer
+  ports:
+  - port: 9696
+    targetPort: 9696
+    protocol: TCP
+    name: http
+  selector:
+    app: prowlarr
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: overseerr-config-pvc
+  namespace: media
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: overseerr
+  namespace: media
+  labels:
+    app: overseerr
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: overseerr
+  template:
+    metadata:
+      labels:
+        app: overseerr
+    spec:
+      containers:
+      - name: overseerr
+        image: lscr.io/linuxserver/overseerr:latest
+        ports:
+        - containerPort: 5055
+          name: http
+        env:
+        - name: PUID
+          value: "0"
+        - name: PGID
+          value: "0"
+        - name: TZ
+          value: "Europe/London"
+        volumeMounts:
+        - name: config-volume
+          mountPath: /config
+        resources:
+          limits:
+            cpu: "1000m"
+            memory: "1024Mi"
+          requests:
+            cpu: "100m"
+            memory: "256Mi"
+      volumes:
+      - name: config-volume
+        persistentVolumeClaim:
+          claimName: overseerr-config-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: overseerr-service
+  namespace: media
+spec:
+  type: LoadBalancer
+  ports:
+  - port: 5055
+    targetPort: 5055
+    protocol: TCP
+    name: http
+  selector:
+    app: overseerr

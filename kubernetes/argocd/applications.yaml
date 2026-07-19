@@ -1,0 +1,339 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: gitea-proxmox-repo
+  namespace: argocd
+  labels:
+    argocd.argoproj.io/secret-type: repository
+type: Opaque
+stringData:
+  type: git
+  url: http://192.168.11.69:3000/yourgithubusername/proxmox.git
+  password: YOUR_GITEA_TOKEN
+  username: user
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: authelia
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: http://192.168.11.69:3000/yourgithubusername/proxmox.git
+    targetRevision: feature/wazuh-api-route
+    path: kubernetes/authelia
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: authelia
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: homepage
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: http://192.168.11.69:3000/yourgithubusername/proxmox.git
+    targetRevision: feature/wazuh-api-route
+    path: kubernetes/homepage
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: homepage
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: uptime-kuma
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: http://192.168.11.69:3000/yourgithubusername/proxmox.git
+    targetRevision: feature/wazuh-api-route
+    path: kubernetes/uptime-kuma
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: uptime-kuma
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: paperless
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: http://192.168.11.69:3000/yourgithubusername/proxmox.git
+    targetRevision: feature/wazuh-api-route
+    path: kubernetes/paperless
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: media
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: ollama
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: http://192.168.11.69:3000/yourgithubusername/proxmox.git
+    targetRevision: feature/wazuh-api-route
+    path: kubernetes/ollama
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: media
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: plex
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: http://192.168.11.69:3000/yourgithubusername/proxmox.git
+    targetRevision: feature/wazuh-api-route
+    path: kubernetes/plex
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: media
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: sabnzbd
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: http://192.168.11.69:3000/yourgithubusername/proxmox.git
+    targetRevision: feature/wazuh-api-route
+    path: kubernetes/sabnzbd
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: media
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: tailscale
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: http://192.168.11.69:3000/yourgithubusername/proxmox.git
+    targetRevision: feature/wazuh-api-route
+    path: kubernetes/tailscale
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: tailscale
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: media-stack
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: http://192.168.11.69:3000/yourgithubusername/proxmox.git
+    targetRevision: feature/wazuh-api-route
+    path: kubernetes/media
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: media
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: nvidia-plugin
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: http://192.168.11.69:3000/yourgithubusername/proxmox.git
+    targetRevision: feature/wazuh-api-route
+    path: kubernetes/nvidia
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kube-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: ergo-irc
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: http://192.168.11.69:3000/yourgithubusername/proxmox.git
+    targetRevision: feature/wazuh-api-route
+    path: kubernetes/ergo
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: irc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kube-prometheus-stack
+  namespace: argocd
+spec:
+  project: default
+  source:
+    chart: kube-prometheus-stack
+    repoURL: https://prometheus-community.github.io/helm-charts
+    targetRevision: 61.1.0
+    helm:
+      values: |
+        alertmanager:
+          config:
+            route:
+              group_by: ['alertname']
+              group_wait: 30s
+              group_interval: 5m
+              repeat_interval: 12h
+              receiver: 'discord'
+              routes:
+              - matchers:
+                - alertname =~ "Watchdog|CPUThrottlingHigh"
+                receiver: 'null'
+              - matchers:
+                - severity = "critical"
+                receiver: 'gotify'
+            receivers:
+            - name: 'null'
+            - name: 'discord'
+              slack_configs:
+              - api_url: 'https://discord.com/api/webhooks/1520578254501576905/afwPjVAgPSkhcfy1b_xQHyBzmwATWq2q2pJQZCrjzixju2nOEZm94zftK8BmZkhzLIwo/slack'
+                channel: '#alerts'
+                send_resolved: true
+            - name: 'gotify'
+              webhook_configs:
+              - url: 'http://alertmanager-gotify-bridge.monitoring.svc:9081/gotify_webhook'
+                send_resolved: true
+          alertmanagerSpec:
+            storage:
+              volumeClaimTemplate:
+                spec:
+                  storageClassName: local-path
+                  accessModes: ["ReadWriteOnce"]
+                  resources:
+                    requests:
+                      storage: 1Gi
+          service:
+            type: NodePort
+            nodePort: 30093
+        prometheus:
+          prometheusSpec:
+            storageSpec:
+              volumeClaimTemplate:
+                spec:
+                  storageClassName: local-path
+                  accessModes: ["ReadWriteOnce"]
+                  resources:
+                    requests:
+                      storage: 5Gi
+            retention: 14d
+          service:
+            type: NodePort
+            nodePort: 30090
+        grafana:
+          persistence:
+            enabled: true
+            storageClassName: local-path
+            accessModes: ["ReadWriteOnce"]
+            size: 2Gi
+          adminPassword: "YOUR_SECURE_PASSWORD"
+          service:
+            type: NodePort
+            nodePort: 30030
+          env:
+            GF_SERVER_DOMAIN: "grafana.example.com"
+            GF_SERVER_ROOT_URL: "https://grafana.example.com"
+            GF_AUTH_PROXY_ENABLED: "true"
+            GF_AUTH_PROXY_HEADER_NAME: "Remote-User"
+            GF_AUTH_PROXY_HEADER_PROPERTY: "username"
+            GF_AUTH_PROXY_AUTO_SIGN_UP: "true"
+            GF_AUTH_PROXY_WHITELIST: "192.168.11.53, 192.168.11.90, 192.168.11.91, 192.168.11.92, 10.42.0.0/16, 10.43.0.0/16, 127.0.0.1, ::1"
+            GF_USERS_AUTO_ASSIGN_ORG_ROLE: "Admin"
+        crds:
+          enabled: false
+        nodeExporter:
+          enabled: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: sre-prober
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: http://192.168.11.69:3000/yourgithubusername/proxmox.git
+    targetRevision: feature/wazuh-api-route
+    path: kubernetes/sre
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

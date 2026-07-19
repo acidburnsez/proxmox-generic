@@ -1,0 +1,95 @@
+name: Terraform CI/CD
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "terraform/**"
+      - ".gitea/workflows/terraform.yaml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "terraform/**"
+
+jobs:
+  terraform:
+    name: Terraform Run
+    runs-on: ubuntu-latest
+    env:
+      VAULT_TOKEN: ${{ secrets.VAULT_TOKEN }}
+      TF_VAR_vault_address: "http://192.168.11.68:8200"
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Install Gitleaks & Checkov
+        run: |
+          apt-get update && apt-get install -y wget python3-venv python3-pip
+          
+          # Install Gitleaks
+          wget -q https://github.com/gitleaks/gitleaks/releases/download/v8.18.2/gitleaks_8.18.2_linux_x64.tar.gz -O /tmp/gitleaks.tar.gz
+          tar -xzf /tmp/gitleaks.tar.gz -C /usr/local/bin/ gitleaks
+          chmod +x /usr/local/bin/gitleaks
+          
+          # Install Checkov
+          python3 -m venv /opt/checkov-env
+          /opt/checkov-env/bin/pip install --no-cache-dir checkov
+          ln -s /opt/checkov-env/bin/checkov /usr/local/bin/checkov
+
+      - name: Run Gitleaks Scan
+        run: |
+          gitleaks detect --source=. --config=.gitleaks.toml --verbose --redact
+
+      - name: Run Checkov Static Analysis (Soft-Fail)
+        run: |
+          checkov -d terraform/ --framework terraform --soft-fail
+
+      - name: Clone Personal Website
+        run: |
+          git clone http://user:${{ secrets.GIT_PAT }}@192.168.11.69:3000/yourgithubusername/personal-website.git personal-website
+
+      - name: Install Terraform
+        run: |
+          apt-get update && apt-get install -y unzip wget openssh-client
+          wget -q https://releases.hashicorp.com/terraform/1.15.6/terraform_1.15.6_linux_amd64.zip -O /tmp/terraform.zip
+          unzip -o /tmp/terraform.zip -d /usr/local/bin/
+          terraform --version
+
+      - name: Configure SSH Key and Agent
+        run: |
+          mkdir -p ~/.ssh
+          echo -e "$SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 192.168.11.110 >> ~/.ssh/known_hosts
+          ssh-agent -a /tmp/ssh_agent.sock -s
+          SSH_AUTH_SOCK=/tmp/ssh_agent.sock ssh-add ~/.ssh/id_ed25519
+          echo "SSH_AUTH_SOCK=/tmp/ssh_agent.sock" >> $GITHUB_ENV
+        env:
+          SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Terraform Init
+        run: |
+          terraform init \
+            -backend-config="address=http://192.168.11.69:3000/api/packages/yourgithubusername/terraform/state/proxmox" \
+            -backend-config="lock_address=http://192.168.11.69:3000/api/packages/yourgithubusername/terraform/state/proxmox/lock" \
+            -backend-config="unlock_address=http://192.168.11.69:3000/api/packages/yourgithubusername/terraform/state/proxmox/lock" \
+            -backend-config="lock_method=POST" \
+            -backend-config="unlock_method=DELETE" \
+            -backend-config="username=user" \
+            -backend-config="password=${{ secrets.GIT_PAT }}"
+        working-directory: terraform
+
+      - name: Terraform Plan
+        if: github.event_name == 'pull_request'
+        run: |
+          terraform plan -var-file=ci.tfvars -no-color
+        working-directory: terraform
+
+      - name: Terraform Apply
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          terraform apply -var-file=ci.tfvars -auto-approve
+        working-directory: terraform
