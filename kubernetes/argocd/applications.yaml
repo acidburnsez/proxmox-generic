@@ -241,16 +241,24 @@ spec:
               group_wait: 30s
               group_interval: 5m
               repeat_interval: 12h
-              receiver: 'discord'
+              receiver: 'discord-and-gotify'
               routes:
               - matchers:
                 - alertname =~ "Watchdog|CPUThrottlingHigh"
                 receiver: 'null'
               - matchers:
                 - severity = "critical"
-                receiver: 'gotify'
+                receiver: 'discord-and-gotify'
             receivers:
             - name: 'null'
+            - name: 'discord-and-gotify'
+              slack_configs:
+              - api_url: 'https://discord.com/api/webhooks/1520578254501576905/afwPjVAgPSkhcfy1b_xQHyBzmwATWq2q2pJQZCrjzixju2nOEZm94zftK8BmZkhzLIwo/slack'
+                channel: '#alerts'
+                send_resolved: true
+              webhook_configs:
+              - url: 'http://alertmanager-gotify-bridge.monitoring.svc:9081/gotify_webhook'
+                send_resolved: true
             - name: 'discord'
               slack_configs:
               - api_url: 'https://discord.com/api/webhooks/1520578254501576905/afwPjVAgPSkhcfy1b_xQHyBzmwATWq2q2pJQZCrjzixju2nOEZm94zftK8BmZkhzLIwo/slack'
@@ -308,6 +316,12 @@ spec:
         crds:
           enabled: false
         nodeExporter:
+          enabled: false
+        kubeControllerManager:
+          enabled: false
+        kubeScheduler:
+          enabled: false
+        kubeProxy:
           enabled: false
   destination:
     server: https://kubernetes.default.svc
