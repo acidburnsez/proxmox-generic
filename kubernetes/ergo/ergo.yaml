@@ -191,15 +191,9 @@ data:
           - massmessage
 
     opers:
-      acidburn:
+      admin:
         class: admin
-        password: "$2a$04$5hTZmlWq06IhITZGCnU1feLChPPfVtkMyvITn2RZGJZv1EAQy.OuC"
-      oninia:
-        class: admin
-        password: "$2a$04$IOs6Xjzv8q2uUq9NIau.c.UAfJumi33Rii3skf3NCH.6y94cZkfDC"
-      thatsecuritykai:
-        class: admin
-        password: "$2a$04$ItKZvC3U3vZf1J6a6nXdlOW.OF6aXvm9krKzwGi3B5TrfRhviNpza"
+        password: "$2a$04$t23QhxOk1luMA8KyFeq1ROmZ9oLqx.fHVN6qPxEElBM0d47qE6Thy" # bcrypt hash for default testing password
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
