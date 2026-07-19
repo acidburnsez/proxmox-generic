@@ -577,7 +577,9 @@ data:
             target = object_path(object_id)
             with DB_LOCK, database() as conn:
                 row = conn.execute("SELECT token_hash FROM objects WHERE object_id = ?", (object_id,)).fetchone()
-                if not row or not token or not hmac.compare_digest(row["token_hash"], token_hash(token)):
+                if not row or not token:
+                    return self.forbidden_upload("invalid delete authorization")
+                if not (hmac.compare_digest(row["token_hash"], token_hash(token)) or valid_manager_token(token)):
                     return self.forbidden_upload("invalid delete authorization")
                 if target.exists():
                     shutil.rmtree(target)
@@ -724,16 +726,22 @@ data:
     
         <section id="idle" class="terminal" aria-label="NeoDrop service status">
           <div class="terminal-bar"><span></span><span></span><span></span><b>drops@relay:~</b></div>
-          <div class="terminal-body">
-            <p><span class="prompt">&gt;&gt;</span> neodrop status --public</p>
-            <p class="terminal-title">Secure File Drop</p>
-            <p>Encrypted in your browser. The server stores ciphertext and never receives the key in this link.</p>
-            <dl>
-              <div><dt>ENCRYPTION</dt><dd>AES-256-GCM</dd></div>
-              <div><dt>ACCESS</dt><dd>CAPABILITY LINK</dd></div>
-              <div><dt>STORAGE</dt><dd>CIPHERTEXT ONLY</dd></div>
-            </dl>
-            <p class="input-line"><span class="prompt">&gt;&gt;</span> <span class="cursor" aria-hidden="true">_</span><span class="sr-only">Awaiting input</span></p>
+          <div class="terminal-body" id="terminal-body">
+            <div id="terminal-history">
+              <p><span class="prompt">&gt;&gt;</span> neodrop status --public</p>
+              <p class="terminal-title">Secure File Drop</p>
+              <p>Encrypted in your browser. The server stores ciphertext and never receives the key in this link.</p>
+              <dl>
+                <div><dt>ENCRYPTION</dt><dd>AES-256-GCM</dd></div>
+                <div><dt>ACCESS</dt><dd>CAPABILITY LINK</dd></div>
+                <div><dt>STORAGE</dt><dd>CIPHERTEXT ONLY</dd></div>
+              </dl>
+            </div>
+            <p class="input-line">
+              <span class="prompt" id="prompt-label">&gt;&gt;</span>
+              <span id="input-buffer"></span><span class="cursor" id="input-cursor" aria-hidden="true">_</span>
+              <input type="text" id="terminal-input" autocomplete="off" autocapitalize="off" spellcheck="false" style="position:absolute; opacity:0; pointer-events:none; width:0; height:0;">
+            </p>
           </div>
         </section>
     
@@ -849,6 +857,158 @@ data:
         } catch(e) { show("error"); }
       }
       load();
+      
+      let managerToken = sessionStorage.getItem("neodrop_token") || "";
+      const terminal = $("idle");
+      const terminalBody = $("terminal-body");
+      const terminalHistory = $("terminal-history");
+      const input = $("terminal-input");
+      const buffer = $("input-buffer");
+      const promptLabel = $("prompt-label");
+      
+      const updatePrompt = () => {
+        promptLabel.textContent = managerToken ? "admin@drops:~ >>" : ">>";
+      };
+      
+      if (terminal && input) {
+        updatePrompt();
+        
+        terminal.addEventListener("click", () => {
+          input.focus();
+        });
+        
+        input.addEventListener("input", () => {
+          buffer.textContent = input.value;
+        });
+        
+        const appendHistory = (htmlContent) => {
+          const div = document.createElement("div");
+          div.innerHTML = htmlContent;
+          terminalHistory.appendChild(div);
+          terminalBody.scrollTop = terminalBody.scrollHeight;
+        };
+        
+        input.addEventListener("keydown", async (e) => {
+          if (e.key === "Enter") {
+            const rawCmd = input.value;
+            const cmd = rawCmd.trim();
+            input.value = "";
+            buffer.textContent = "";
+            
+            if (!cmd) return;
+            
+            const currentPrompt = promptLabel.textContent;
+            appendHistory(`<p><span class="prompt">${currentPrompt}</span> ${rawCmd}</p>`);
+            
+            const parts = cmd.split(/\s+/);
+            const op = parts[0].toLowerCase();
+            
+            if (op === "help") {
+              appendHistory(`
+                <p style="color:var(--muted)">Available commands:</p>
+                <p style="color:var(--cyan)">  help             Show this help menu</p>
+                <p style="color:var(--cyan)">  status           Show public drops configuration</p>
+                <p style="color:var(--cyan)">  auth &lt;token&gt;     Authenticate with Manager Token</p>
+                <p style="color:var(--cyan)">  list             List active objects (Admin only)</p>
+                <p style="color:var(--cyan)">  delete &lt;id&gt;      Delete object by ID (Admin only)</p>
+                <p style="color:var(--cyan)">  clear            Clear terminal screen</p>
+              `);
+            } else if (op === "status") {
+              appendHistory(`
+                <p class="terminal-title">Secure File Drop</p>
+                <dl>
+                  <div><dt>ENCRYPTION</dt><dd>AES-256-GCM</dd></div>
+                  <div><dt>ACCESS</dt><dd>CAPABILITY LINK</dd></div>
+                  <div><dt>STORAGE</dt><dd>CIPHERTEXT ONLY</dd></div>
+                </dl>
+              `);
+            } else if (op === "auth") {
+              const token = parts[1] || "";
+              if (!token) {
+                appendHistory('<p style="color:var(--pink)">Usage: auth &lt;token&gt;</p>');
+                return;
+              }
+              appendHistory('<p>Validating token...</p>');
+              try {
+                const response = await fetch("/api/v1/manager/objects", {
+                  headers: { "Authorization": `Bearer ${token}` }
+                });
+                if (response.ok) {
+                  managerToken = token;
+                  sessionStorage.setItem("neodrop_token", token);
+                  updatePrompt();
+                  appendHistory('<p style="color:var(--acid)">Authentication successful. Admin mode activated.</p>');
+                } else {
+                  appendHistory('<p style="color:var(--pink)">Error: Invalid manager token.</p>');
+                }
+              } catch (err) {
+                appendHistory('<p style="color:var(--pink)">Connection error validating token.</p>');
+              }
+            } else if (op === "list") {
+              if (!managerToken) {
+                appendHistory('<p style="color:var(--pink)">Permission denied: please run "auth &lt;token&gt;" first.</p>');
+                return;
+              }
+              appendHistory('<p>Fetching inventory...</p>');
+              try {
+                const response = await fetch("/api/v1/manager/objects", {
+                  headers: { "Authorization": `Bearer ${managerToken}` }
+                });
+                if (response.ok) {
+                  const data = await response.json();
+                  const objects = data.objects || [];
+                  if (objects.length === 0) {
+                    appendHistory('<p style="color:var(--muted)">No active files hosted on drops.</p>');
+                  } else {
+                    let table = '<pre style="font:inherit; color:var(--cyan)">';
+                    table += "ID                               SIZE       EXPIRES\n";
+                    table += "-------------------------------------------------------------\n";
+                    objects.forEach(obj => {
+                      const exp = new Date(obj.expiresAt * 1000).toISOString().split('T')[0];
+                      const sizeStr = formatSize(obj.size).padStart(10, ' ');
+                      table += `${obj.id} ${sizeStr} ${exp}\n`;
+                    });
+                    table += "</pre>";
+                    appendHistory(table);
+                  }
+                } else {
+                  appendHistory('<p style="color:var(--pink)">Error fetching inventory. Try re-authenticating.</p>');
+                }
+              } catch (err) {
+                appendHistory('<p style="color:var(--pink)">Connection error fetching inventory.</p>');
+              }
+            } else if (op === "delete") {
+              const id = parts[1] || "";
+              if (!managerToken) {
+                appendHistory('<p style="color:var(--pink)">Permission denied: please run "auth &lt;token&gt;" first.</p>');
+                return;
+              }
+              if (!id) {
+                appendHistory('<p style="color:var(--pink)">Usage: delete &lt;object_id&gt;</p>');
+                return;
+              }
+              appendHistory(`<p>Attempting to purge object ${id}...</p>`);
+              try {
+                const response = await fetch(`/api/v1/objects/${id}`, {
+                  method: "DELETE",
+                  headers: { "Authorization": `Bearer ${managerToken}` }
+                });
+                if (response.ok) {
+                  appendHistory(`<p style="color:var(--acid)">Object ${id} deleted successfully.</p>`);
+                } else {
+                  appendHistory(`<p style="color:var(--pink)">Error: Delete failed (check object ID and token).</p>`);
+                }
+              } catch (err) {
+                appendHistory('<p style="color:var(--pink)">Connection error executing delete request.</p>');
+              }
+            } else if (op === "clear") {
+              terminalHistory.innerHTML = "";
+            } else {
+              appendHistory(`<p style="color:var(--pink)">Command not found: ${op}. Type "help" for list of commands.</p>`);
+            }
+          }
+        });
+      }
     })();
   style.css: |
     :root {
@@ -886,7 +1046,7 @@ data:
     .terminal-bar span:nth-child(2) { background:var(--violet); }
     .terminal-bar span:nth-child(3) { background:var(--acid); }
     .terminal-bar b { margin-left:6px; font-weight:700; }
-    .terminal-body { padding:clamp(20px,4vw,34px); }
+    .terminal-body { padding:clamp(20px,4vw,34px); max-height:480px; overflow-y:auto; scroll-behavior:smooth; }
     .terminal-body p { margin:0 0 8px; color:#c8c2cf; }
     .terminal-title { margin:20px 0 8px!important; color:var(--text)!important; font-size:clamp(20px,3vw,32px); text-transform:uppercase; }
     .terminal .prompt { color:var(--violet); }
