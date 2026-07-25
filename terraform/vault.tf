@@ -121,7 +121,7 @@ resource "proxmox_virtual_environment_firewall_options" "vault" {
   node_name = var.proxmox_node
   vm_id     = local.vault_vm_id
 
-  enabled       = false
+  enabled       = true
   input_policy  = "DROP"
   output_policy = "ACCEPT"
   log_level_in  = "nolog"
