@@ -251,7 +251,7 @@ spec:
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: sre-prober
+  name: sre-tools
   namespace: argocd
 spec:
   project: default
@@ -259,6 +259,25 @@ spec:
     repoURL: http://192.168.11.69:3000/yourgithubusername/proxmox.git
     targetRevision: feature/wazuh-api-route
     path: kubernetes/sre
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: sre
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: prometheus-blackbox-exporter
+  namespace: argocd
+spec:
+  project: default
+  source:
+    chart: prometheus-blackbox-exporter
+    repoURL: https://prometheus-community.github.io/helm-charts
+    targetRevision: 8.16.0
   destination:
     server: https://kubernetes.default.svc
     namespace: monitoring
