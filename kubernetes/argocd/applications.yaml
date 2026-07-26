@@ -228,104 +228,16 @@ metadata:
   namespace: argocd
 spec:
   project: default
-  source:
-    chart: kube-prometheus-stack
+  sources:
+  - chart: kube-prometheus-stack
     repoURL: https://prometheus-community.github.io/helm-charts
     targetRevision: 61.1.0
     helm:
-      values: |
-        alertmanager:
-          alertmanagerSpec:
-            secrets:
-              - alertmanager-secrets
-          config:
-            route:
-              group_by: ['alertname']
-              group_wait: 30s
-              group_interval: 5m
-              repeat_interval: 12h
-              receiver: 'discord-and-gotify'
-              routes:
-              - matchers:
-                - alertname =~ "Watchdog|CPUThrottlingHigh"
-                receiver: 'null'
-              - matchers:
-                - severity = "critical"
-                receiver: 'discord-and-gotify'
-            receivers:
-            - name: 'null'
-            - name: 'discord-and-gotify'
-              slack_configs:
-              - api_url: 'https://discord.com/api/webhooks/1520578254501576905/afwPjVAgPSkhcfy1b_xQHyBzmwATWq2q2pJQZCrjzixju2nOEZm94zftK8BmZkhzLIwo/slack'
-                channel: '#alerts'
-                send_resolved: true
-              webhook_configs:
-              - url: 'http://alertmanager-gotify-bridge.monitoring.svc:9081/gotify_webhook'
-                send_resolved: true
-            - name: 'discord'
-              slack_configs:
-              - api_url_file: '/etc/alertmanager/secrets/alertmanager-secrets/discord_webhook'
-                channel: '#alerts'
-                send_resolved: true
-            - name: 'gotify'
-              webhook_configs:
-              - url: 'http://alertmanager-gotify-bridge.monitoring.svc:9081/gotify_webhook'
-                send_resolved: true
-          alertmanagerSpec:
-            storage:
-              volumeClaimTemplate:
-                spec:
-                  storageClassName: local-path
-                  accessModes: ["ReadWriteOnce"]
-                  resources:
-                    requests:
-                      storage: 1Gi
-          service:
-            type: NodePort
-            nodePort: 30093
-        prometheus:
-          prometheusSpec:
-            storageSpec:
-              volumeClaimTemplate:
-                spec:
-                  storageClassName: local-path
-                  accessModes: ["ReadWriteOnce"]
-                  resources:
-                    requests:
-                      storage: 5Gi
-            retention: 14d
-          service:
-            type: NodePort
-            nodePort: 30090
-        grafana:
-          persistence:
-            enabled: true
-            storageClassName: local-path
-            accessModes: ["ReadWriteOnce"]
-            size: 2Gi
-          adminPassword: "YOUR_SECURE_PASSWORD"
-          service:
-            type: NodePort
-            nodePort: 30030
-          env:
-            GF_SERVER_DOMAIN: "grafana.example.com"
-            GF_SERVER_ROOT_URL: "https://grafana.example.com"
-            GF_AUTH_PROXY_ENABLED: "true"
-            GF_AUTH_PROXY_HEADER_NAME: "Remote-User"
-            GF_AUTH_PROXY_HEADER_PROPERTY: "username"
-            GF_AUTH_PROXY_AUTO_SIGN_UP: "true"
-            GF_AUTH_PROXY_WHITELIST: "192.168.11.53, 192.168.11.90, 192.168.11.91, 192.168.11.92, 10.42.0.0/16, 10.43.0.0/16, 127.0.0.1, ::1"
-            GF_USERS_AUTO_ASSIGN_ORG_ROLE: "Admin"
-        crds:
-          enabled: false
-        nodeExporter:
-          enabled: false
-        kubeControllerManager:
-          enabled: false
-        kubeScheduler:
-          enabled: false
-        kubeProxy:
-          enabled: false
+      valueFiles:
+      - $values/kubernetes/monitoring/kube-prometheus-stack-values.yaml
+  - repoURL: http://192.168.11.69:3000/yourgithubusername/proxmox.git
+    targetRevision: main
+    ref: values
   destination:
     server: https://kubernetes.default.svc
     namespace: monitoring
