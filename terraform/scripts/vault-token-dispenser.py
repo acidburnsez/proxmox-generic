@@ -47,7 +47,7 @@ def create_vault_token():
             
         payload = {
             "ttl": "5m",
-            "policies": ["proxmox-read", "default"],
+            "policies": ["proxmox-read", "default", "k8s-read"],
             "meta": {
                 "authenticated_by": "tailscale-whois"
             }

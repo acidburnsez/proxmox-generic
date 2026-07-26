@@ -12,8 +12,9 @@ data:
     import json
     import socket
     from datetime import datetime
+    import os
 
-    DISCORD_WEBHOOK = "https://discord.com/api/webhooks/1520578254501576905/afwPjVAgPSkhcfy1b_xQHyBzmwATWq2q2pJQZCrjzixju2nOEZm94zftK8BmZkhzLIwo/slack"
+    DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK")
 
     TARGETS = [
         # Public HTTPS Endpoints
@@ -26,6 +27,9 @@ data:
     ]
 
     def send_alert(url, error_msg, latency=None):
+        if not DISCORD_WEBHOOK:
+            print("Warning: DISCORD_WEBHOOK is not set, skipping alert.")
+            return
         payload = {
             "username": "SRE Monarch Prober",
             "attachments": [{
@@ -117,6 +121,12 @@ spec:
           - name: prober
             image: python:3.11-alpine
             command: ["python3", "/opt/sre/probe.py"]
+            env:
+            - name: DISCORD_WEBHOOK
+              valueFrom:
+                secretKeyRef:
+                  name: discord-secrets
+                  key: discord-webhook
             volumeMounts:
             - name: script-vol
               mountPath: /opt/sre
@@ -125,3 +135,22 @@ spec:
             configMap:
               name: sre-monarch-prober-script
               defaultMode: 0755
+---
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: discord-secrets
+  namespace: monitoring
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: vault-backend
+  target:
+    name: discord-secrets
+    creationPolicy: Owner
+  data:
+  - secretKey: discord-webhook
+    remoteRef:
+      key: proxmox
+      property: discord_webhook_alert_bot

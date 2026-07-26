@@ -235,6 +235,9 @@ spec:
     helm:
       values: |
         alertmanager:
+          alertmanagerSpec:
+            secrets:
+              - alertmanager-secrets
           config:
             route:
               group_by: ['alertname']
@@ -261,7 +264,7 @@ spec:
                 send_resolved: true
             - name: 'discord'
               slack_configs:
-              - api_url: 'https://discord.com/api/webhooks/1520578254501576905/afwPjVAgPSkhcfy1b_xQHyBzmwATWq2q2pJQZCrjzixju2nOEZm94zftK8BmZkhzLIwo/slack'
+              - api_url_file: '/etc/alertmanager/secrets/alertmanager-secrets/discord_webhook'
                 channel: '#alerts'
                 send_resolved: true
             - name: 'gotify'
