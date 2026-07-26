@@ -38,7 +38,7 @@ alertmanager:
   storage:
     volumeClaimTemplate:
       spec:
-        storageClassName: local-path
+        storageClassName: longhorn
         accessModes: ["ReadWriteOnce"]
         resources:
           requests:
@@ -51,7 +51,7 @@ prometheus:
     storageSpec:
       volumeClaimTemplate:
         spec:
-          storageClassName: local-path
+          storageClassName: longhorn
           accessModes: ["ReadWriteOnce"]
           resources:
             requests:
@@ -63,7 +63,7 @@ prometheus:
 grafana:
   persistence:
     enabled: true
-    storageClassName: local-path
+    storageClassName: longhorn
     accessModes: ["ReadWriteOnce"]
     size: 2Gi
   adminPassword: "YOUR_SECURE_PASSWORD"
