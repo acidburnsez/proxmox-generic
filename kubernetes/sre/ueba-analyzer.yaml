@@ -1,0 +1,190 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ueba-analyzer-script
+  namespace: sre
+data:
+  ueba_analyzer.py: |
+    import os
+    import json
+    import urllib.request
+    import urllib.error
+    import base64
+    import ssl
+
+    WAZUH_INDEXER_URL = os.environ.get('WAZUH_INDEXER_URL', 'https://wazuh-indexer.sre.svc.cluster.local:9200')
+    WAZUH_USER = os.environ.get('WAZUH_USER', 'admin')
+    WAZUH_PASSWORD = os.environ.get('WAZUH_PASSWORD', 'admin')
+    OLLAMA_URL = os.environ.get('OLLAMA_URL', 'http://ollama-service.media.svc.cluster.local:11434/api/generate')
+    DISCORD_WEBHOOK_URL = os.environ.get('DISCORD_WEBHOOK_URL', '')
+
+    def fetch_wazuh_logs():
+        query = {
+            "query": {
+                "range": {
+                    "timestamp": {
+                        "gte": "now-1h",
+                        "lte": "now"
+                    }
+                }
+            },
+            "size": 50,
+            "sort": [{"timestamp": {"order": "desc"}}]
+        }
+        
+        url = f"{WAZUH_INDEXER_URL}/wazuh-alerts-*/_search"
+        req = urllib.request.Request(url, data=json.dumps(query).encode('utf-8'))
+        req.add_header('Content-Type', 'application/json')
+        
+        auth_b64 = base64.b64encode(f"{WAZUH_USER}:{WAZUH_PASSWORD}".encode()).decode('utf-8')
+        req.add_header('Authorization', f'Basic {auth_b64}')
+
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+
+        try:
+            with urllib.request.urlopen(req, context=ctx) as response:
+                data = json.loads(response.read().decode('utf-8'))
+                hits = data.get("hits", {}).get("hits", [])
+                return [hit.get("_source", {}) for hit in hits]
+        except urllib.error.URLError as e:
+            print(f"Error fetching logs from Wazuh: {e}")
+            return []
+
+    def analyze_logs_with_ollama(logs):
+        if not logs:
+            return "NO_ANOMALY"
+
+        log_summary = json.dumps(logs, indent=2)[:6000]
+        
+        prompt = f"""You are a UEBA (User and Entity Behavior Analytics) AI agent.
+    Analyze the following recent security logs from Wazuh.
+    Look for behavioral anomalies, signs of lateral movement, privilege escalation, or highly suspicious access patterns.
+    If you detect an anomaly, reply with a brief summary of the threat, the user/entity involved, and why it's suspicious.
+    If there are no anomalies or the logs are benign, reply strictly with "NO_ANOMALY".
+
+    Logs:
+    {log_summary}
+    """
+
+        payload = {
+            "model": "llama3:8b",
+            "prompt": prompt,
+            "stream": False
+        }
+
+        req = urllib.request.Request(OLLAMA_URL, data=json.dumps(payload).encode('utf-8'))
+        req.add_header('Content-Type', 'application/json')
+
+        try:
+            with urllib.request.urlopen(req) as response:
+                data = json.loads(response.read().decode('utf-8'))
+                return data.get("response", "").strip()
+        except urllib.error.URLError as e:
+            print(f"Error querying Ollama: {e}")
+            return "NO_ANOMALY"
+
+    def send_discord_alert(message):
+        if not DISCORD_WEBHOOK_URL:
+            print("Discord Webhook URL not set. Skipping alert.")
+            return
+
+        payload = {
+            "content": f"🚨 **UEBA Anomaly Detected (Lateral Movement / Suspicious Behavior)** 🚨\n```\n{message}\n```"
+        }
+
+        req = urllib.request.Request(DISCORD_WEBHOOK_URL, data=json.dumps(payload).encode('utf-8'))
+        req.add_header('Content-Type', 'application/json')
+        req.add_header('User-Agent', 'UEBA-Analyzer/1.0')
+
+        try:
+            with urllib.request.urlopen(req):
+                print("Alert successfully sent to Discord.")
+        except urllib.error.URLError as e:
+            print(f"Error sending Discord alert: {e}")
+
+    def main():
+        print("Starting UEBA log analysis...")
+        logs = fetch_wazuh_logs()
+        
+        if not logs:
+            print("No logs retrieved in the last hour.")
+            return
+
+        print(f"Fetched {len(logs)} logs. Sending to Ollama for analysis...")
+        analysis_result = analyze_logs_with_ollama(logs)
+
+        if analysis_result and "NO_ANOMALY" not in analysis_result.upper():
+            print(f"Anomaly detected:\n{analysis_result}")
+            send_discord_alert(analysis_result)
+        else:
+            print("No anomalies detected by LLM.")
+
+    if __name__ == "__main__":
+        main()
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ueba-analyzer
+  namespace: sre
+spec:
+  schedule: "0 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: ueba-analyzer
+            image: python:3.11-slim
+            command: ["python", "/app/ueba_analyzer.py"]
+            env:
+            - name: WAZUH_INDEXER_URL
+              value: "https://wazuh-indexer.sre.svc.cluster.local:9200"
+            - name: WAZUH_USER
+              value: "admin"
+            - name: WAZUH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: bff-secrets
+                  key: wazuh-password
+                  optional: true
+            - name: OLLAMA_URL
+              value: "http://ollama-service.media.svc.cluster.local:11434/api/generate"
+            - name: DISCORD_WEBHOOK_URL
+              valueFrom:
+                secretKeyRef:
+                  name: ueba-secrets
+                  key: discord-webhook
+                  optional: true
+            volumeMounts:
+            - name: ueba-script-volume
+              mountPath: /app
+          restartPolicy: OnFailure
+          volumes:
+          - name: ueba-script-volume
+            configMap:
+              name: ueba-analyzer-script
+---
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: ueba-secrets
+  namespace: sre
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: vault-backend
+  target:
+    name: ueba-secrets
+    creationPolicy: Owner
+  data:
+  - secretKey: discord-webhook
+    remoteRef:
+      key: proxmox
+      property: wazuh_alerts_webhook
