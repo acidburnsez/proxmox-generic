@@ -27,31 +27,3 @@ module "gitea" {
   tags           = ["terraform", "services"]
 }
 
-resource "null_resource" "gitea_setup" {
-  depends_on = [module.gitea]
-
-  triggers = {
-    script_hash = filemd5("${path.module}/scripts/install-gitea.sh")
-  }
-
-  connection {
-    type         = "ssh"
-    host         = "192.168.11.69"
-    user         = "root"
-    agent        = true
-    bastion_host = var.proxmox_host
-    bastion_user = var.proxmox_ssh_user
-  }
-
-  provisioner "file" {
-    source      = "${path.module}/scripts/install-gitea.sh"
-    destination = "/tmp/install-gitea.sh"
-  }
-
-  provisioner "remote-exec" {
-    inline = [
-      "chmod +x /tmp/install-gitea.sh",
-      "/tmp/install-gitea.sh",
-    ]
-  }
-}

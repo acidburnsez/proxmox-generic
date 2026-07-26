@@ -1,0 +1,52 @@
+all:
+  vars:
+    ansible_user: root
+  children:
+    proxmox:
+      hosts:
+        192.168.11.200: # Assuming 192.168.11.200 is the Proxmox host based on previous scripts
+          setup_script: setup-proxmox-nvidia.sh
+    caddy:
+      hosts:
+        192.168.11.53:
+          setup_script: install-caddy.sh
+    gitea:
+      hosts:
+        192.168.11.69:
+          setup_script: install-gitea.sh
+    gotify:
+      hosts:
+        192.168.11.75:
+          setup_script: install-gotify.sh
+    vault:
+      hosts:
+        192.168.11.68:
+          setup_script: install-vault.sh
+    wazuh:
+      hosts:
+        192.168.11.95:
+          setup_script: install-wazuh.sh
+    authelia:
+      hosts:
+        192.168.11.55:
+          setup_script: install-authelia.sh
+    homepage:
+      hosts:
+        192.168.11.54:
+          setup_script: install-homepage.sh
+    paperless:
+      hosts:
+        192.168.11.66:
+          setup_script: install-paperless.sh
+    plex:
+      hosts:
+        192.168.11.80:
+          setup_script: install-plex.sh
+    uptime_kuma:
+      hosts:
+        192.168.11.74:
+          setup_script: install-uptime-kuma.sh
+    tailscale_relay:
+      hosts:
+        192.168.11.52:
+          setup_script: install-tailscale.sh

@@ -10,10 +10,10 @@ locals {
 
   # Parse "root@pam!terraform=uuid" into parts for pve.yml config
   _pve_token_parts = split("!", local.proxmox_api_token)
-  pve_token_user   = local._pve_token_parts[0]                        # root@pam
+  pve_token_user   = local._pve_token_parts[0] # root@pam
   _pve_name_val    = split("=", local._pve_token_parts[1])
-  pve_token_name   = local._pve_name_val[0]                           # terraform
-  pve_token_value  = local._pve_name_val[1]                           # uuid
+  pve_token_name   = local._pve_name_val[0] # terraform
+  pve_token_value  = local._pve_name_val[1] # uuid
 }
 
 # ── Container ─────────────────────────────────────────────────────────────────
@@ -43,35 +43,6 @@ module "pve_exporter" {
 
 # ── Install ───────────────────────────────────────────────────────────────────
 
-resource "null_resource" "pve_exporter_setup" {
-  depends_on = [module.pve_exporter]
-
-  triggers = {
-    script_hash = filemd5("${path.module}/scripts/install-pve-exporter.sh")
-    vm_id       = local.pve_exporter_vm_id
-  }
-
-  connection {
-    type         = "ssh"
-    host         = "192.168.11.52"
-    user         = "root"
-    agent        = true
-    bastion_host = var.proxmox_host
-    bastion_user = var.proxmox_ssh_user
-  }
-
-  provisioner "file" {
-    source      = "${path.module}/scripts/install-pve-exporter.sh"
-    destination = "/tmp/install-pve-exporter.sh"
-  }
-
-  provisioner "remote-exec" {
-    inline = [
-      "chmod +x /tmp/install-pve-exporter.sh",
-      "/tmp/install-pve-exporter.sh '${local.pve_token_user}' '${local.pve_token_name}' '${local.pve_token_value}'",
-    ]
-  }
-}
 
 
 # ── Output ────────────────────────────────────────────────────────────────────

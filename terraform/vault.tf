@@ -39,79 +39,9 @@ module "vault" {
 
 # ── TUN device passthrough (for Tailscale client) ─────────────────────────────
 
-resource "null_resource" "vault_tun" {
-  depends_on = [module.vault]
-
-  triggers = {
-    vm_id = local.vault_vm_id
-  }
-
-  connection {
-    type  = "ssh"
-    host  = var.proxmox_host
-    user  = var.proxmox_ssh_user
-    agent = true
-  }
-
-  provisioner "remote-exec" {
-    inline = [
-      "CONFIG=/etc/pve/lxc/${local.vault_vm_id}.conf",
-
-      "pct stop ${local.vault_vm_id} || true",
-      "sleep 3",
-
-      # Allow TUN character device (major 10, minor 200)
-      "grep -q 'cgroup2.*10:200' $CONFIG || echo 'lxc.cgroup2.devices.allow: c 10:200 rwm' >> $CONFIG",
-
-      # Bind-mount /dev/net/tun into the container
-      "mkdir -p /dev/net",
-      "[ -e /dev/net/tun ] || (mknod /dev/net/tun c 10 200 && chmod 0666 /dev/net/tun)",
-      "grep -q 'dev/net/tun' $CONFIG || echo 'lxc.mount.entry: /dev/net/tun dev/net/tun none bind,create=file 0 0' >> $CONFIG",
-
-      "pct start ${local.vault_vm_id}",
-      "sleep 10",
-    ]
-  }
-}
 
 # ── Install & Provision ────────────────────────────────────────────────────────
 
-resource "null_resource" "vault_setup" {
-  depends_on = [null_resource.vault_tun]
-
-  triggers = {
-    script_hash    = filemd5("${path.module}/scripts/install-vault.sh")
-    dispenser_hash = filemd5("${path.module}/scripts/vault-token-dispenser.py")
-  }
-
-  connection {
-    type         = "ssh"
-    host         = "192.168.11.68"
-    user         = "root"
-    agent        = true
-    bastion_host = var.proxmox_host
-    bastion_user = var.proxmox_ssh_user
-  }
-
-  # Copy the installer script
-  provisioner "file" {
-    source      = "${path.module}/scripts/install-vault.sh"
-    destination = "/tmp/install-vault.sh"
-  }
-
-  # Copy the Python Token Dispenser
-  provisioner "file" {
-    source      = "${path.module}/scripts/vault-token-dispenser.py"
-    destination = "/tmp/vault-token-dispenser.py"
-  }
-
-  provisioner "remote-exec" {
-    inline = [
-      "chmod +x /tmp/install-vault.sh",
-      "/tmp/install-vault.sh '${local.tailscale_auth_key}'",
-    ]
-  }
-}
 
 # ── Firewall Rules ────────────────────────────────────────────────────────────
 
