@@ -1,0 +1,274 @@
+{
+    email admin@{{ domain }}
+    crowdsec {
+        api_url http://localhost:8080
+        api_key {{ bouncer_key }}
+    }
+}
+
+# Reusable auth import block for Authelia SSO
+(auth) {
+    forward_auth 192.168.11.90:9091 192.168.11.91:9091 192.168.11.92:9091 {
+        uri /api/verify?rd=https://auth.{{ domain }}/
+        copy_headers Remote-User Remote-Groups Remote-Name Remote-Email
+    }
+}
+
+# Wildcard domain router
+*.{{ domain }} {
+    log {
+        output file /var/log/caddy/access.log
+        format json
+    }
+    
+    tls {
+        dns cloudflare {env.CF_API_TOKEN}
+    }
+
+    route {
+        # Apple App Site Association for Passkeys
+        handle /.well-known/apple-app-site-association {
+            header Content-Type "application/json"
+            respond \`{"webcredentials":{"apps":["27H9V537MH.com.secops.mobile.wazuh-ollama-ios"]}}\`
+        }
+
+        # Active CrowdSec IPS inspection
+        crowdsec
+
+        @website host user.{{ domain }}
+        handle @website {
+            reverse_proxy 192.168.11.80:80
+        }
+
+        @homepage host homepage.{{ domain }}
+        handle @homepage {
+            import auth
+            reverse_proxy 192.168.11.90:3000 192.168.11.91:3000 192.168.11.92:3000
+        }
+
+        @gotify host gotify.{{ domain }}
+        handle @gotify {
+            reverse_proxy 192.168.11.58:80
+        }
+
+        @bff host bff.{{ domain }}
+        handle @bff {
+            reverse_proxy 192.168.11.90:30010 192.168.11.91:30010 192.168.11.92:30010
+        }
+
+        @status host status.{{ domain }}
+        handle @status {
+            reverse_proxy 192.168.11.90:3001 192.168.11.91:3001 192.168.11.92:3001
+        }
+
+        @grafana host grafana.{{ domain }}
+        handle @grafana {
+            import auth
+            reverse_proxy 192.168.11.90:30030 192.168.11.91:30030 192.168.11.92:30030
+        }
+
+        @prometheus host prometheus.{{ domain }}
+        handle @prometheus {
+            import auth
+            reverse_proxy 192.168.11.90:30090 192.168.11.91:30090 192.168.11.92:30090
+        }
+
+        @plex host plex.{{ domain }}
+        handle @plex {
+            reverse_proxy 192.168.11.90:32400 192.168.11.91:32400 192.168.11.92:32400
+        }
+
+        @gitea host gitea.{{ domain }}
+        handle @gitea {
+            # Bypass Authelia for actions runners and package registries
+            @bypass path /api/actions_pipeline/* /api/v1/packages/* /api/packages/*
+            handle @bypass {
+                reverse_proxy 192.168.11.69:3000
+            }
+
+            handle {
+                import auth
+                reverse_proxy 192.168.11.69:3000
+            }
+        }
+
+        @argocd host argocd.{{ domain }}
+        handle @argocd {
+            import auth
+            reverse_proxy https://192.168.11.90:8082 https://192.168.11.91:8082 https://192.168.11.92:8082 {
+                transport http {
+                    tls_insecure_skip_verify
+                }
+            }
+        }
+
+        @longhorn host longhorn.{{ domain }}
+        handle @longhorn {
+            import auth
+            reverse_proxy 192.168.11.90:8083 192.168.11.91:8083 192.168.11.92:8083
+        }
+
+        @ollama host ollama.{{ domain }}
+        handle @ollama {
+            reverse_proxy 192.168.11.90:11434 192.168.11.91:11434 192.168.11.92:11434
+        }
+
+        @neobear host chat.{{ domain }}
+        handle @neobear {
+            route /weechat {
+                reverse_proxy 192.168.11.90:30091 192.168.11.91:30091 192.168.11.92:30091
+            }
+            route {
+                import auth
+                reverse_proxy 192.168.11.90:30080 192.168.11.91:30080 192.168.11.92:30080
+            }
+        }
+
+        @neodrop host drops.{{ domain }}
+        handle @neodrop {
+            reverse_proxy 192.168.11.90:30081 192.168.11.91:30081 192.168.11.92:30081
+        }
+
+        @proxmox host proxmox.{{ domain }}
+        handle @proxmox {
+            import auth
+            reverse_proxy https://192.168.11.110:8006 {
+                transport http {
+                    tls_insecure_skip_verify
+                }
+            }
+        }
+
+        @overseerr host overseerr.{{ domain }}
+        handle @overseerr {
+            reverse_proxy 192.168.11.90:5055 192.168.11.91:5055 192.168.11.92:5055
+        }
+
+        @sonarr host sonarr.{{ domain }}
+        handle @sonarr {
+            import auth
+            reverse_proxy 192.168.11.90:8989 192.168.11.91:8989 192.168.11.92:8989
+        }
+
+        @radarr host radarr.{{ domain }}
+        handle @radarr {
+            import auth
+            reverse_proxy 192.168.11.90:7878 192.168.11.91:7878 192.168.11.92:7878
+        }
+
+        @prowlarr host prowlarr.{{ domain }}
+        handle @prowlarr {
+            import auth
+            reverse_proxy 192.168.11.90:9696 192.168.11.91:9696 192.168.11.92:9696
+        }
+
+        @sabnzbd host sabnzbd.{{ domain }}
+        handle @sabnzbd {
+            import auth
+            reverse_proxy 192.168.11.90:8080 192.168.11.91:8080 192.168.11.92:8080
+        }
+
+        @requestrr host requestrr.{{ domain }}
+        handle @requestrr {
+            reverse_proxy 192.168.11.90:4545 192.168.11.91:4545 192.168.11.92:4545
+        }
+
+        @paperless host paperless.{{ domain }}
+        handle @paperless {
+            import auth
+            reverse_proxy 192.168.11.90:8000 192.168.11.91:8000 192.168.11.92:8000
+        }
+
+        @wazuh host wazuh.{{ domain }}
+        handle @wazuh {
+            import auth
+            
+            # Custom alerts API gateway (port 55001)
+            route /wazuh-api/alerts {
+                uri strip_prefix /wazuh-api
+                reverse_proxy 192.168.11.57:55001
+            }
+            
+            # API gateway for everything else (port 55000)
+            route /wazuh-api/* {
+                uri strip_prefix /wazuh-api
+                reverse_proxy https://192.168.11.57:55000 {
+                    transport http {
+                        tls_insecure_skip_verify
+                    }
+                }
+            }
+
+            # Proxmox VE API gateway (with token injection)
+            route /pve-api/* {
+                uri strip_prefix /pve-api
+                reverse_proxy https://192.168.11.110:8006 {
+                    header_up Authorization "PVEAPIToken=root@pam!mobile-app=fb3aba52-445d-40b1-b28d-65d7d481a007"
+                    transport http {
+                        tls_insecure_skip_verify
+                    }
+                }
+            }
+
+            # Prometheus Metrics API gateway
+            route /prometheus-api/* {
+                uri strip_prefix /prometheus-api
+                reverse_proxy 192.168.11.50:9090
+            }
+            
+            # Wazuh Dashboard Web UI
+            route {
+                reverse_proxy https://192.168.11.57:443 {
+                    transport http {
+                        tls_insecure_skip_verify
+                    }
+                }
+            }
+        }
+
+        # Catch-all fallback
+        handle {
+            abort
+        }
+    }
+}
+
+# Authelia SSO interface
+auth.{{ domain }} {
+    log {
+        output file /var/log/caddy/access.log
+        format json
+    }
+    
+    tls {
+        dns cloudflare {env.CF_API_TOKEN}
+    }
+    
+    route {
+        # Apple App Site Association for Passkeys
+        handle /.well-known/apple-app-site-association {
+            header Content-Type "application/json"
+            respond \`{"webcredentials":{"apps":["27H9V537MH.com.secops.mobile.wazuh-ollama-ios"]}}\`
+        }
+
+        crowdsec
+        reverse_proxy 192.168.11.90:9091 192.168.11.91:9091 192.168.11.92:9091
+    }
+}
+
+# Root Personal Website Domain
+{{ domain }} {
+    log {
+        output file /var/log/caddy/access.log
+        format json
+    }
+    
+    tls {
+        dns cloudflare {env.CF_API_TOKEN}
+    }
+    
+    route {
+        crowdsec
+        reverse_proxy 192.168.11.80:80
+    }
+}
