@@ -39,7 +39,7 @@ locals {
   wazuh_alerts_webhook         = local.secrets["wazuh_alerts_webhook"]
   wazuh_summary_webhook        = local.secrets["wazuh_summary_webhook"]
   authelia_admin_password      = local.secrets["authelia_admin_password"]
-  wazuh_gotify_token           = "ArvFsf.E4qKhq8m"
+  wazuh_gotify_token           = local.secrets["wazuh_gotify_token"]
 }
 
 provider "proxmox" {
